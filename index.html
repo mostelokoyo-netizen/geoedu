@@ -1,0 +1,1325 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  BookOpen, Image as ImageIcon, Link as LinkIcon, AlignLeft, 
+  PlayCircle, Trophy, Sparkles, ChevronRight, CheckCircle2, 
+  XCircle, ArrowRight, Languages, Loader2, BookMarked, Settings, Map,
+  FileText, Copy, CheckCircle, User, Bot, Send, HelpCircle, Lightbulb, History, Globe,
+  Download, FileDown
+} from 'lucide-react';
+
+const apiKey = ""; // Provided by execution environment
+
+// --- API Retry Logic ---
+const fetchWithRetry = async (url, options, retries = 5) => {
+  const delays = [1000, 2000, 4000, 8000, 16000];
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      return await response.json();
+    } catch (err) {
+      if (i === retries - 1) throw err;
+      await new Promise(res => setTimeout(res, delays[i]));
+    }
+  }
+};
+
+// --- Shared JSON Schema for Lesson Generation & Refinement ---
+const lessonSchema = {
+  type: "OBJECT",
+  properties: {
+    title: { type: "STRING" },
+    introduction: { type: "STRING" },
+    mainConcepts: { 
+      type: "ARRAY", 
+      description: "Deep, detailed main explanation paragraphs.",
+      items: { 
+        type: "OBJECT",
+        properties: {
+          title: { type: "STRING" },
+          detailedExplanation: { type: "STRING", description: "In-depth explanation covering how and why. Text only, no JSON syntax." }
+        }
+      } 
+    },
+    examples: { 
+      type: "ARRAY", 
+      items: { 
+        type: "OBJECT",
+        properties: {
+          title: { type: "STRING" },
+          description: { type: "STRING", description: "Detailed real-world examples, locations, or phenomena." }
+        }
+      } 
+    },
+    funFacts: { 
+      type: "ARRAY", 
+      items: { 
+        type: "OBJECT",
+        properties: {
+          title: { type: "STRING" },
+          description: { type: "STRING", description: "Fascinating facts, including historical background or modern latest data." }
+        }
+      } 
+    },
+    summary: {
+      type: "OBJECT",
+      properties: {
+        short: { type: "STRING" },
+        bulletPoints: { type: "ARRAY", items: { type: "STRING" } }
+      }
+    },
+    essay: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          question: { type: "STRING" },
+          answerKey: { type: "STRING", description: "Detailed answer key for teacher" }
+        }
+      }
+    },
+    shortAnswer: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          question: { type: "STRING" },
+          answer: { type: "STRING", description: "Short answer, 1-3 words" }
+        }
+      }
+    },
+    crossword: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          word: { type: "STRING", description: "Single word, UPPERCASE, NO SPACES" },
+          clue: { type: "STRING", description: "Clue for the crossword puzzle maker" }
+        }
+      }
+    },
+    quiz: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          question: { type: "STRING" },
+          options: { type: "ARRAY", items: { type: "STRING" }, description: "Must be exactly 4 options" },
+          correctAnswer: { type: "STRING", description: "Must exactly match one of the options" },
+          explanation: { type: "STRING" }
+        }
+      }
+    }
+  },
+  required: ["title", "introduction", "mainConcepts", "examples", "funFacts", "summary", "quiz", "essay", "shortAnswer", "crossword"]
+};
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState('create');
+  const [language, setLanguage] = useState('id'); // 'id' or 'en'
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Input State
+  const [inputType, setInputType] = useState('text');
+  const [rawText, setRawText] = useState('');
+  const [inputUrl, setInputUrl] = useState('');
+  const [imageBase64, setImageBase64] = useState(null);
+  const [grade, setGrade] = useState(4);
+  const [topic, setTopic] = useState('');
+
+  // Generated Content State
+  const [lessonData, setLessonData] = useState(null);
+  const [ttsCopied, setTtsCopied] = useState(false);
+
+  // AI Refine State
+  const [refinePrompt, setRefinePrompt] = useState('');
+  const [isRefining, setIsRefining] = useState(false);
+
+  // AI Solver State
+  const [solverInputType, setSolverInputType] = useState('text');
+  const [solverText, setSolverText] = useState('');
+  const [solverImageBase64, setSolverImageBase64] = useState(null);
+  const [solverResult, setSolverResult] = useState(null);
+  const [isSolving, setIsSolving] = useState(false);
+  const [solverError, setSolverError] = useState(null);
+
+  // Question Bank Tab State
+  const [questionTab, setQuestionTab] = useState('mcq');
+
+  // Quiz State
+  const [quizState, setQuizState] = useState({
+    isActive: false,
+    currentIndex: 0,
+    score: 0,
+    showFeedback: false,
+    selectedAnswer: null,
+    isComplete: false
+  });
+
+  const handleImageUpload = (e, targetState) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64String = reader.result.split(',')[1];
+        targetState({ mimeType: file.type, data: base64String });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const generateLesson = async () => {
+    setIsGenerating(true);
+    setError(null);
+
+    const langInstruction = language === 'id' ? "Gunakan Bahasa Indonesia yang interaktif, mudah dipahami, namun sangat mendalam dan berbobot." : "Use interactive, easy-to-understand, yet highly detailed and profound English.";
+    
+    let contentParts = [];
+    let promptContext = "";
+
+    if (inputType === 'text') {
+      promptContext = `Bahan materi: ${rawText}`;
+      contentParts.push({ text: promptContext });
+    } else if (inputType === 'url') {
+      promptContext = `Buat materi berdasarkan topik dari URL ini: ${inputUrl} (Anggap kamu membaca isinya)`;
+      contentParts.push({ text: promptContext });
+    } else if (inputType === 'image' && imageBase64) {
+      promptContext = `Buat materi Geografi berdasarkan gambar yang saya unggah ini.`;
+      contentParts.push({ text: promptContext });
+      contentParts.push({ inlineData: imageBase64 });
+    } else if (topic) {
+        promptContext = `Buat materi Geografi tentang topik: ${topic}.`;
+        contentParts.push({ text: promptContext });
+    } else {
+        setError(language === 'id' ? "Harap masukkan materi atau topik." : "Please input material or topic.");
+        setIsGenerating(false);
+        return;
+    }
+
+    const systemInstruction = `
+      You are an expert, insightful, and engaging Geography teacher for Grade ${grade} students.
+      Your task is to convert raw inputs into highly structured, VERY DETAILED, and engaging learning materials.
+      Do not just give surface-level summaries. Go deep into the "Why" and "How".
+      Include rich historical contexts, modern discoveries, and fascinating real-world examples.
+      Make it feel like a premium educational module.
+      IMPORTANT STRICT RULE: Ensure NO raw JSON syntax (like ',"title":', brackets, or keys) leaks into the string values. Provide clean, grammatically correct text ONLY inside the properties.
+      ${langInstruction}
+    `;
+
+    const fullPrompt = `Based on the input provided, generate a comprehensive Geography lesson for Grade ${grade}. Follow the exact JSON schema provided.`;
+    contentParts.unshift({ text: fullPrompt });
+
+    const payload = {
+      contents: [{ role: "user", parts: contentParts }],
+      systemInstruction: { parts: [{ text: systemInstruction }] },
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: lessonSchema
+      }
+    };
+
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+      const result = await fetchWithRetry(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (generatedText) {
+        const parsedData = JSON.parse(generatedText);
+        setLessonData(parsedData);
+        setActiveTab('lesson');
+        setQuestionTab('mcq');
+        setQuizState({ isActive: false, currentIndex: 0, score: 0, showFeedback: false, selectedAnswer: null, isComplete: false });
+      } else {
+        setError(language === 'id' ? "Gagal menghasilkan materi. Silakan coba lagi." : "Failed to generate lesson. Please try again.");
+      }
+    } catch (err) {
+      setError(`Error: ${err.message}. Pastikan API key tersedia dan valid.`);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const solveQuestion = async () => {
+    // ... (solver logic remains exactly the same)
+    if (!solverText && !solverImageBase64) {
+      setSolverError(language === 'id' ? "Harap masukkan teks soal atau unggah gambar soal." : "Please input question text or upload an image.");
+      return;
+    }
+
+    setIsSolving(true);
+    setSolverError(null);
+    setSolverResult(null);
+
+    let contentParts = [];
+    if (solverInputType === 'text') {
+      contentParts.push({ text: `Tolong jawab soal berikut secara rinci: ${solverText}` });
+    } else if (solverInputType === 'image' && solverImageBase64) {
+      contentParts.push({ text: "Tolong analisis gambar/dokumen soal berikut dan berikan jawabannya secara rinci." });
+      contentParts.push({ inlineData: solverImageBase64 });
+    }
+
+    const payload = {
+      contents: [{ role: "user", parts: contentParts }],
+      systemInstruction: { parts: [{ text: `You are an expert, highly intelligent Geography tutor. Your job is to solve the user's questions accurately. Provide a clear answer, a step-by-step detailed explanation, and list the key concepts involved. Respond in ${language === 'id' ? 'Indonesian' : 'English'}.` }] },
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "OBJECT",
+          properties: {
+            questionSummary: { type: "STRING" },
+            answer: { type: "STRING" },
+            detailedExplanation: { type: "STRING" },
+            keyConcepts: { type: "ARRAY", items: { type: "STRING" } }
+          },
+          required: ["questionSummary", "answer", "detailedExplanation", "keyConcepts"]
+        }
+      }
+    };
+
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+      const result = await fetchWithRetry(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (generatedText) setSolverResult(JSON.parse(generatedText));
+      else setSolverError(language === 'id' ? "Gagal menjawab soal." : "Failed to solve question.");
+    } catch (err) {
+      setSolverError(`Error: ${err.message}`);
+    } finally {
+      setIsSolving(false);
+    }
+  };
+
+  const handleRefineLesson = async () => {
+    // ... (refine logic remains the same)
+    if (!refinePrompt.trim() || !lessonData) return;
+    setIsRefining(true);
+    setError(null);
+
+    const systemInstruction = `You are an expert Geography teacher. The user wants to modify or add to the existing lesson material based on this request: "${refinePrompt}". 
+    Maintain the previous context and output the updated content adhering strictly to the JSON schema. Ensure no existing core concepts are lost unless explicitly requested. Make any additions deeply detailed.
+    IMPORTANT: Ensure NO raw JSON syntax leaks into the string values. Provide clean text.
+    Please respond in ${language === 'id' ? 'Indonesian' : 'English'}.`;
+
+    const payload = {
+      contents: [
+        { role: "user", parts: [{ text: `Current Lesson JSON: ${JSON.stringify(lessonData)}` }, { text: `User request to modify: ${refinePrompt}` }] }
+      ],
+      systemInstruction: { parts: [{ text: systemInstruction }] },
+      generationConfig: { responseMimeType: "application/json", responseSchema: lessonSchema }
+    };
+
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+      const result = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (generatedText) {
+        setLessonData(JSON.parse(generatedText));
+        setRefinePrompt('');
+      } else {
+        setError(language === 'id' ? "Gagal merevisi materi." : "Failed to refine lesson.");
+      }
+    } catch (err) { setError(`Error: ${err.message}`); } 
+    finally { setIsRefining(false); }
+  };
+
+  // --- Export Functions ---
+  const generateExportHTML = () => {
+    if (!lessonData) return '';
+    let html = `<h1 style="color: #059669; border-bottom: 2px solid #10b981; padding-bottom: 10px;">${lessonData.title}</h1>`;
+    html += `<p style="font-size: 1.1em; color: #4b5563;"><em>${lessonData.introduction}</em></p>`;
+    
+    html += `<h2 style="color: #2563eb; margin-top: 30px;">Materi Utama</h2>`;
+    (lessonData.mainConcepts || []).forEach((c, i) => {
+       const title = typeof c === 'object' ? c.title : `Konsep ${i+1}`;
+       let desc = typeof c === 'object' ? c.detailedExplanation : c;
+       if (typeof desc === 'string') desc = desc.replace(/",\s*"title":\s*".*?",\s*"detailedExplanation":\s*"/g, ' ').replace(/",\s*"title":\s*".*?",\s*"description":\s*"/g, ' ').replace(/\}$/g, '');
+       html += `<h3 style="color: #0f766e; margin-bottom: 5px;">${i+1}. ${title}</h3><p style="margin-top: 0;">${desc}</p>`;
+    });
+
+    html += `<h2 style="color: #2563eb; margin-top: 30px;">Contoh Dunia Nyata</h2>`;
+    (lessonData.examples || []).forEach(ex => {
+       const title = typeof ex === 'object' ? ex.title : '';
+       let desc = typeof ex === 'object' ? ex.description : ex;
+       if (typeof desc === 'string') desc = desc.replace(/",\s*"title":\s*".*?",\s*"detailedExplanation":\s*"/g, ' ').replace(/",\s*"title":\s*".*?",\s*"description":\s*"/g, ' ').replace(/\}$/g, '');
+       if(title) html += `<h4 style="color: #4338ca; margin-bottom: 5px;">${title}</h4>`;
+       html += `<p style="margin-top: 0;">${desc}</p>`;
+    });
+
+    html += `<h2 style="color: #2563eb; margin-top: 30px;">Fakta Menarik</h2><ul style="background: #f9fafb; padding: 20px 40px; border-radius: 8px;">`;
+    (lessonData.funFacts || []).forEach(f => {
+       const title = typeof f === 'object' ? f.title : '';
+       let desc = typeof f === 'object' ? f.description : f;
+       if (typeof desc === 'string') desc = desc.replace(/",\s*"title":\s*".*?",\s*"detailedExplanation":\s*"/g, ' ').replace(/",\s*"title":\s*".*?",\s*"description":\s*"/g, ' ').replace(/\}$/g, '');
+       html += `<li style="margin-bottom: 10px;"><strong>${title}</strong>: ${desc}</li>`;
+    });
+    html += `</ul>`;
+
+    html += `<h2 style="color: #2563eb; margin-top: 30px;">Ringkasan</h2>`;
+    html += `<p style="font-weight: bold; color: #ea580c;">${lessonData.summary?.short}</p><ul>`;
+    (lessonData.summary?.bulletPoints || []).forEach(bp => { html += `<li>${bp}</li>`; });
+    html += `</ul>`;
+
+    return html;
+  };
+
+  const generateExportQuestionsHTML = () => {
+    if (!lessonData) return '';
+    const isId = language === 'id';
+    let html = `<div style="font-family: Arial, sans-serif; color: #1e293b; line-height: 1.6; max-width: 800px; margin: auto;">`;
+    html += `<h1 style="text-align: center; color: #0f172a; border-bottom: 2px solid #cbd5e1; padding-bottom: 15px; margin-bottom: 30px;">${isId ? 'Bank Soal' : 'Question Bank'}: ${lessonData.title}</h1>`;
+
+    // A. Multiple Choice
+    if (lessonData.quiz && lessonData.quiz.length > 0) {
+      html += `<h2 style="color: #1e40af; border-bottom: 1px solid #bfdbfe; padding-bottom: 5px;">A. ${isId ? 'Pilihan Ganda' : 'Multiple Choice'}</h2>`;
+      lessonData.quiz.forEach((q, i) => {
+        html += `<div style="margin-bottom: 25px; page-break-inside: avoid;">`;
+        html += `<p style="font-weight: bold; margin-bottom: 8px;">${i + 1}. ${q.question}</p>`;
+        html += `<ol type="a" style="margin-top: 0; margin-bottom: 12px; padding-left: 20px;">`;
+        (q.options || []).forEach(opt => {
+          html += `<li style="margin-bottom: 4px;">${opt}</li>`;
+        });
+        html += `</ol>`;
+        html += `<div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; padding: 12px; border-radius: 6px;">`;
+        html += `<strong style="color: #166534;">${isId ? 'Kunci Jawaban' : 'Answer Key'}:</strong> ${q.correctAnswer}<br/>`;
+        html += `<em style="color: #3f6212; display: block; margin-top: 6px;"><strong>${isId ? 'Pembahasan' : 'Explanation'}:</strong> ${q.explanation}</em>`;
+        html += `</div></div>`;
+      });
+    }
+
+    // B. Short Answer
+    if (lessonData.shortAnswer && lessonData.shortAnswer.length > 0) {
+      html += `<h2 style="color: #c2410c; border-bottom: 1px solid #fed7aa; padding-bottom: 5px; margin-top: 40px;">B. ${isId ? 'Isian Singkat' : 'Short Answer'}</h2>`;
+      lessonData.shortAnswer.forEach((q, i) => {
+        html += `<div style="margin-bottom: 20px; page-break-inside: avoid;">`;
+        html += `<p style="font-weight: bold; margin-bottom: 5px;">${i + 1}. ${q.question}</p>`;
+        html += `<p style="margin-top: 0; color: #9a3412; background-color: #fff7ed; padding: 8px; border-radius: 4px; display: inline-block;"><strong>${isId ? 'Jawaban' : 'Answer'}:</strong> ${q.answer}</p>`;
+        html += `</div>`;
+      });
+    }
+
+    // C. Essay
+    if (lessonData.essay && lessonData.essay.length > 0) {
+      html += `<h2 style="color: #7e22ce; border-bottom: 1px solid #e9d5ff; padding-bottom: 5px; margin-top: 40px;">C. ${isId ? 'Esai / Uraian' : 'Essay'}</h2>`;
+      lessonData.essay.forEach((q, i) => {
+        html += `<div style="margin-bottom: 25px; page-break-inside: avoid;">`;
+        html += `<p style="font-weight: bold; margin-bottom: 8px;">${i + 1}. ${q.question}</p>`;
+        html += `<div style="background-color: #faf5ff; border: 1px solid #e9d5ff; padding: 12px; border-radius: 6px; color: #581c87;">`;
+        html += `<strong>${isId ? 'Panduan Jawaban Guru' : 'Teacher Answer Guide'}:</strong><br/><p style="margin-top: 5px; margin-bottom: 0;">${q.answerKey}</p>`;
+        html += `</div></div>`;
+      });
+    }
+
+    // D. TTS
+    if (lessonData.crossword && lessonData.crossword.length > 0) {
+      html += `<h2 style="color: #047857; border-bottom: 1px solid #a7f3d0; padding-bottom: 5px; margin-top: 40px;">D. ${isId ? 'Data Teka-Teki Silang (TTS)' : 'Crossword Data'}</h2>`;
+      html += `<pre style="background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 15px; border-radius: 6px; font-family: monospace; white-space: pre-wrap; word-wrap: break-word;">`;
+      const ttsData = lessonData.crossword.map(item => `${(item.word || '').replace(/\s+/g, '').toUpperCase()} ${item.clue || ''}`).join('\n');
+      html += ttsData;
+      html += `</pre>`;
+    }
+
+    html += `</div>`;
+    return html;
+  };
+
+  const handleDownloadWord = () => {
+    const htmlContent = generateExportHTML();
+    const header = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>Materi Geografi</title></head><body>";
+    const footer = "</body></html>";
+    const sourceHTML = header + htmlContent + footer;
+    
+    const source = 'data:application/vnd.ms-word;charset=utf-8,' + encodeURIComponent(sourceHTML);
+    const fileDownload = document.createElement("a");
+    document.body.appendChild(fileDownload);
+    fileDownload.href = source;
+    fileDownload.download = `${(lessonData?.title || 'Materi_Geografi').replace(/\s+/g, '_')}.doc`;
+    fileDownload.click();
+    document.body.removeChild(fileDownload);
+  };
+
+  const handleDownloadQuestionsWord = () => {
+    const htmlContent = generateExportQuestionsHTML();
+    const header = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>Bank Soal Geografi</title></head><body>";
+    const footer = "</body></html>";
+    const sourceHTML = header + htmlContent + footer;
+    
+    const source = 'data:application/vnd.ms-word;charset=utf-8,' + encodeURIComponent(sourceHTML);
+    const fileDownload = document.createElement("a");
+    document.body.appendChild(fileDownload);
+    fileDownload.href = source;
+    fileDownload.download = `Bank_Soal_${(lessonData?.title || 'Geografi').replace(/\s+/g, '_')}.doc`;
+    fileDownload.click();
+    document.body.removeChild(fileDownload);
+  };
+
+  const handleDownloadPDF = () => {
+    const htmlContent = generateExportHTML();
+    const printWindow = window.open('', '_blank');
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>${lessonData?.title || 'PDF Export'}</title>
+          <style>
+            body { font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #1e293b; padding: 40px; max-width: 800px; margin: 0 auto; }
+            @media print { body { padding: 0; max-width: 100%; } }
+          </style>
+        </head>
+        <body>
+          ${htmlContent}
+          <script>
+            setTimeout(() => { window.print(); window.close(); }, 500);
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
+
+  const handleDownloadQuestionsPDF = () => {
+    const htmlContent = generateExportQuestionsHTML();
+    const printWindow = window.open('', '_blank');
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>Bank Soal - ${lessonData?.title || 'PDF Export'}</title>
+          <style>
+            body { font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #1e293b; padding: 40px; max-width: 800px; margin: 0 auto; }
+            @media print { 
+              body { padding: 0; max-width: 100%; }
+              @page { margin: 2cm; }
+            }
+          </style>
+        </head>
+        <body>
+          ${htmlContent}
+          <script>
+            setTimeout(() => { window.print(); window.close(); }, 500);
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
+
+  // Quiz Helpers
+  const handleQuizAnswer = (option) => {
+    if (quizState.showFeedback) return;
+    const isCorrect = option === lessonData.quiz[quizState.currentIndex].correctAnswer;
+    setQuizState(prev => ({
+      ...prev, selectedAnswer: option, showFeedback: true, score: isCorrect ? prev.score + 10 : prev.score
+    }));
+  };
+
+  const nextQuestion = () => {
+    if (quizState.currentIndex < (lessonData?.quiz?.length || 0) - 1) {
+      setQuizState(prev => ({ ...prev, currentIndex: prev.currentIndex + 1, showFeedback: false, selectedAnswer: null }));
+    } else {
+      setQuizState(prev => ({ ...prev, isComplete: true, showFeedback: false }));
+    }
+  };
+
+  const handleCopyTTS = () => {
+    const textToCopy = (lessonData?.crossword || []).map(item => `${(item.word || '').replace(/\s+/g, '').toUpperCase()} ${item.clue || ''}`).join('\n');
+    const textArea = document.createElement("textarea");
+    textArea.value = textToCopy;
+    document.body.appendChild(textArea);
+    textArea.select();
+    try {
+      document.execCommand('copy');
+      setTtsCopied(true);
+      setTimeout(() => setTtsCopied(false), 2000);
+    } catch (err) { console.error('Failed to copy', err); }
+    document.body.removeChild(textArea);
+  };
+
+  // UI Safe Render Helper (Sanitizer)
+  const sanitizeText = (text) => {
+    if (typeof text !== 'string') return '';
+    return text.replace(/",\s*"title":\s*".*?",\s*"detailedExplanation":\s*"/g, ' ')
+               .replace(/",\s*"title":\s*".*?",\s*"description":\s*"/g, ' ')
+               .replace(/\}$/g, '');
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex font-sans text-slate-800">
+      
+      {/* Sidebar */}
+      <aside className="w-20 md:w-64 bg-white border-r border-green-100 flex flex-col items-center md:items-start p-4 shadow-sm transition-all z-20">
+        <div className="flex items-center gap-3 mb-10 text-green-600 w-full justify-center md:justify-start px-2 mt-2">
+          <Globe size={32} className="shrink-0" />
+          <span className="text-2xl font-bold hidden md:block tracking-tight text-slate-800">GeoAI <span className="text-green-500">Pro</span></span>
+        </div>
+        
+        <nav className="flex flex-col gap-2 w-full">
+          <NavItem icon={<Sparkles size={20} />} label={language === 'id' ? "Buat Materi" : "Create Lesson"} active={activeTab === 'create'} onClick={() => setActiveTab('create')} />
+          <NavItem icon={<HelpCircle size={20} />} label={language === 'id' ? "AI Penjawab Soal" : "AI Solver"} active={activeTab === 'solver'} onClick={() => setActiveTab('solver')} />
+          
+          {lessonData && (
+            <div className="mt-4 pt-4 border-t border-slate-100 flex flex-col gap-2 w-full">
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider hidden md:block mb-2 px-3">Modul Aktif</span>
+              <NavItem icon={<BookOpen size={20} />} label={language === 'id' ? "Materi Belajar" : "Lesson Material"} active={activeTab === 'lesson'} onClick={() => setActiveTab('lesson')} />
+              <NavItem icon={<FileText size={20} />} label={language === 'id' ? "Bank Soal" : "Question Bank"} active={activeTab === 'questions'} onClick={() => setActiveTab('questions')} />
+              <NavItem icon={<PlayCircle size={20} />} label={language === 'id' ? "Kuis Interaktif" : "Interactive Quiz"} active={activeTab === 'quiz'} onClick={() => setActiveTab('quiz')} />
+            </div>
+          )}
+        </nav>
+
+        <div className="mt-auto w-full flex flex-col gap-2">
+          <button 
+            onClick={() => setLanguage(l => l === 'id' ? 'en' : 'id')}
+            className="flex items-center gap-3 p-3 rounded-xl hover:bg-green-50 text-slate-600 transition-colors w-full justify-center md:justify-start border border-slate-100"
+          >
+            <Languages size={20} />
+            <span className="hidden md:block font-medium">{language === 'id' ? 'Bahasa: ID' : 'Lang: EN'}</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      <main className="flex-1 overflow-y-auto relative h-screen">
+        
+        {/* Top Navbar Header */}
+        <header className="sticky top-0 z-10 bg-white/80 backdrop-blur-md border-b border-slate-200 px-6 md:px-10 py-4 flex justify-between items-center shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="bg-gradient-to-r from-green-400 to-emerald-500 p-2.5 rounded-full text-white shadow-md">
+              <User size={18} />
+            </div>
+            <div>
+              <span className="block font-bold text-slate-800 text-sm">{language === 'id' ? 'Guru Geografi' : 'Geography Teacher'}</span>
+              <span className="block text-xs text-slate-500 font-medium">Premium Plus Account</span>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <div className="px-4 py-1.5 bg-green-100 text-green-700 rounded-full text-xs font-extrabold uppercase tracking-widest border border-green-200 flex items-center gap-1">
+              <Sparkles size={12} /> Model Mendalam
+            </div>
+          </div>
+        </header>
+
+        <div className="p-6 md:p-10 max-w-5xl mx-auto pb-32">
+          
+          {/* TAB: CREATE CONTENT */}
+          {activeTab === 'create' && (
+            <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-4xl mx-auto">
+              <header className="mb-8">
+                <h1 className="text-3xl md:text-4xl font-bold text-slate-800 mb-2">
+                  {language === 'id' ? 'Halo, Guru! 👋' : 'Hello, Teacher! 👋'}
+                </h1>
+                <p className="text-slate-500 text-lg">
+                  {language === 'id' ? 'Mari buat modul geografi yang mendalam dan berbobot hari ini.' : 'Let\'s create a deep and profound geography module today.'}
+                </p>
+              </header>
+
+              <div className="bg-white rounded-3xl shadow-sm border border-green-100 p-6 md:p-8">
+                <div className="flex flex-wrap gap-2 mb-6">
+                  <InputTab icon={<AlignLeft size={18}/>} label="Text" active={inputType === 'text'} onClick={() => setInputType('text')} />
+                  <InputTab icon={<LinkIcon size={18}/>} label="Link" active={inputType === 'url'} onClick={() => setInputType('url')} />
+                  <InputTab icon={<ImageIcon size={18}/>} label="Image / Document" active={inputType === 'image'} onClick={() => setInputType('image')} />
+                </div>
+
+                <div className="space-y-6">
+                  {inputType === 'text' && (
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">
+                         {language === 'id' ? 'Teks Referensi / Topik Utama' : 'Reference Text / Topic'}
+                      </label>
+                      <textarea 
+                        rows="4" 
+                        value={rawText}
+                        onChange={(e) => setRawText(e.target.value)}
+                        placeholder={language === 'id' ? "Contoh: Proses terjadinya lempeng tektonik dan dampaknya..." : "Example: Tectonic plates..."}
+                        className="w-full rounded-2xl border-slate-200 border-2 p-4 focus:ring-4 focus:ring-green-100 focus:border-green-500 outline-none transition-all resize-none text-slate-700 bg-slate-50"
+                      />
+                    </div>
+                  )}
+
+                  {inputType === 'url' && (
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">
+                         {language === 'id' ? 'Tautan Artikel/Web/Blog' : 'Article/Web Link'}
+                      </label>
+                      <input 
+                        type="url" 
+                        value={inputUrl}
+                        onChange={(e) => setInputUrl(e.target.value)}
+                        placeholder="https://..."
+                        className="w-full rounded-2xl border-slate-200 border-2 p-4 focus:ring-4 focus:ring-green-100 focus:border-green-500 outline-none transition-all bg-slate-50"
+                      />
+                    </div>
+                  )}
+
+                  {inputType === 'image' && (
+                    <div>
+                       <label className="block text-sm font-semibold text-slate-700 mb-2">
+                         {language === 'id' ? 'Unggah Gambar (Peta/Diagram/Screenshot Dokumen)' : 'Upload Image (Map/Diagram/Document Screenshot)'}
+                      </label>
+                      <div className="border-2 border-dashed border-green-300 rounded-2xl p-8 text-center hover:bg-green-50 transition-colors cursor-pointer relative bg-slate-50">
+                        <input type="file" accept="image/*" onChange={(e) => handleImageUpload(e, setImageBase64)} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                        <ImageIcon size={48} className="mx-auto text-green-400 mb-4" />
+                        <p className="text-slate-600 font-medium">
+                          {imageBase64 ? (language === 'id' ? 'Gambar/Dokumen dipilih!' : 'Image/Document selected!') : (language === 'id' ? 'Klik atau tarik file ke sini' : 'Click or drag file here')}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">
+                        {language === 'id' ? 'Tingkat Kelas (SD/SMP/SMA)' : 'Grade Level'}
+                      </label>
+                      <select 
+                        value={grade} 
+                        onChange={(e) => setGrade(Number(e.target.value))}
+                        className="w-full rounded-2xl border-slate-200 border-2 p-4 focus:ring-4 focus:ring-green-100 focus:border-green-500 outline-none appearance-none bg-slate-50"
+                      >
+                        {[1,2,3,4,5,6,7,8,9,10,11,12].map(num => (
+                          <option key={num} value={num}>{language === 'id' ? `Kelas ${num}` : `Grade ${num}`}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">
+                        {language === 'id' ? 'Topik Spesifik (Opsional)' : 'Specific Topic (Optional)'}
+                      </label>
+                      <input 
+                        type="text" 
+                        value={topic}
+                        onChange={(e) => setTopic(e.target.value)}
+                        placeholder={language === 'id' ? "Misal: Mitigasi Bencana..." : "e.g., Disaster Mitigation..."}
+                        className="w-full rounded-2xl border-slate-200 border-2 p-4 focus:ring-4 focus:ring-green-100 focus:border-green-500 outline-none transition-all bg-slate-50"
+                      />
+                    </div>
+                  </div>
+
+                  {error && (
+                    <div className="bg-red-50 text-red-600 p-4 rounded-xl text-sm border border-red-100 flex items-start gap-2">
+                      <XCircle size={18} className="shrink-0 mt-0.5" />
+                      <span>{error}</span>
+                    </div>
+                  )}
+
+                  <button 
+                    onClick={generateLesson}
+                    disabled={isGenerating}
+                    className="w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-bold text-lg py-4 rounded-2xl transition-all transform hover:scale-[1.01] active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-green-200 disabled:opacity-70 disabled:cursor-not-allowed"
+                  >
+                    {isGenerating ? <Loader2 className="animate-spin" /> : <Sparkles />}
+                    {isGenerating 
+                      ? (language === 'id' ? 'Menyusun Analisis Mendalam...' : 'Drafting Deep Analysis...') 
+                      : (language === 'id' ? 'Buat Modul Mendalam' : 'Generate Deep Module')}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: AI SOLVER */}
+          {activeTab === 'solver' && (
+            <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-4xl mx-auto">
+              <header className="mb-8 text-center">
+                <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4 rotate-3">
+                  <Bot size={32} />
+                </div>
+                <h1 className="text-3xl font-bold text-slate-800 mb-2">
+                  {language === 'id' ? 'AI Penjawab Soal Otomatis' : 'AI Auto Solver'}
+                </h1>
+                <p className="text-slate-500 text-lg max-w-xl mx-auto">
+                  {language === 'id' ? 'Tempelkan soal ujian, tugas, atau unggah foto dokumen LKS. AI akan memberikan jawaban dan penjelasan rincinya.' : 'Paste exam questions, assignments, or upload a photo of the worksheet. AI will provide answers and detailed explanations.'}
+                </p>
+              </header>
+
+              <div className="bg-white rounded-3xl shadow-sm border border-blue-100 p-6 md:p-8 mb-8">
+                <div className="flex justify-center gap-2 mb-6">
+                  <InputTab icon={<AlignLeft size={16}/>} label={language === 'id' ? 'Teks Soal' : 'Text Question'} active={solverInputType === 'text'} onClick={() => setSolverInputType('text')} />
+                  <InputTab icon={<ImageIcon size={16}/>} label={language === 'id' ? 'Foto/Screenshot' : 'Photo/Screenshot'} active={solverInputType === 'image'} onClick={() => setSolverInputType('image')} />
+                </div>
+
+                {solverInputType === 'text' && (
+                  <textarea 
+                    rows="5" 
+                    value={solverText}
+                    onChange={(e) => setSolverText(e.target.value)}
+                    placeholder={language === 'id' ? "Paste pertanyaan Anda di sini... (Bisa panjang atau multiple choice)" : "Paste your question here..."}
+                    className="w-full rounded-2xl border-slate-200 border-2 p-4 focus:ring-4 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all resize-none text-slate-700 bg-slate-50 mb-6"
+                  />
+                )}
+
+                {solverInputType === 'image' && (
+                  <div className="border-2 border-dashed border-blue-300 rounded-2xl p-8 text-center hover:bg-blue-50 transition-colors cursor-pointer relative bg-slate-50 mb-6">
+                    <input type="file" accept="image/*" onChange={(e) => handleImageUpload(e, setSolverImageBase64)} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                    <ImageIcon size={48} className="mx-auto text-blue-400 mb-4" />
+                    <p className="text-slate-600 font-medium">
+                      {solverImageBase64 ? (language === 'id' ? 'Foto soal siap diproses!' : 'Image ready to process!') : (language === 'id' ? 'Klik atau tarik foto soal/dokumen ke sini' : 'Click or drag photo of document here')}
+                    </p>
+                  </div>
+                )}
+
+                {solverError && (
+                  <div className="bg-red-50 text-red-600 p-4 rounded-xl text-sm border border-red-100 flex items-start gap-2 mb-6">
+                    <XCircle size={18} className="shrink-0 mt-0.5" />
+                    <span>{solverError}</span>
+                  </div>
+                )}
+
+                <button 
+                  onClick={solveQuestion}
+                  disabled={isSolving}
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-lg py-4 rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-200 disabled:opacity-70 disabled:cursor-not-allowed"
+                >
+                  {isSolving ? <Loader2 className="animate-spin" /> : <HelpCircle />}
+                  {isSolving ? (language === 'id' ? 'Menganalisis Jawaban...' : 'Analyzing Answer...') : (language === 'id' ? 'Temukan Jawaban & Penjelasan' : 'Find Answer & Explanation')}
+                </button>
+              </div>
+
+              {solverResult && (
+                <div className="bg-white rounded-3xl shadow-lg border border-slate-200 overflow-hidden animate-in slide-in-from-bottom-4">
+                  <div className="bg-blue-50 border-b border-blue-100 p-6 flex items-start gap-4">
+                    <Bot size={28} className="text-blue-600 shrink-0 mt-1" />
+                    <div>
+                      <h3 className="font-bold text-slate-800 text-lg">{language === 'id' ? 'Ringkasan Soal:' : 'Question Summary:'}</h3>
+                      <p className="text-slate-600">{solverResult.questionSummary}</p>
+                    </div>
+                  </div>
+                  <div className="p-8 space-y-6">
+                    <div>
+                      <h4 className="text-sm font-bold text-green-600 uppercase tracking-widest mb-2 flex items-center gap-2">
+                        <CheckCircle2 size={16} /> {language === 'id' ? 'Jawaban' : 'Answer'}
+                      </h4>
+                      <div className="text-2xl font-extrabold text-slate-800 bg-green-50 p-4 rounded-2xl border border-green-100">
+                        {solverResult.answer}
+                      </div>
+                    </div>
+                    
+                    <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
+                      <h4 className="text-sm font-bold text-blue-600 uppercase tracking-widest mb-3 flex items-center gap-2">
+                        <Lightbulb size={16} /> {language === 'id' ? 'Penjelasan Detail' : 'Detailed Explanation'}
+                      </h4>
+                      <p className="text-slate-700 leading-relaxed whitespace-pre-wrap text-lg">
+                        {solverResult.detailedExplanation}
+                      </p>
+                    </div>
+
+                    <div>
+                      <h4 className="text-sm font-bold text-purple-600 uppercase tracking-widest mb-3">
+                        {language === 'id' ? 'Konsep Terkait' : 'Related Concepts'}
+                      </h4>
+                      <div className="flex flex-wrap gap-2">
+                        {solverResult.keyConcepts.map((concept, idx) => (
+                          <span key={idx} className="bg-purple-100 text-purple-800 px-3 py-1 rounded-full text-sm font-medium border border-purple-200">
+                            {concept}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB: LESSON MATERIAL (DEEP MODULE) */}
+          {activeTab === 'lesson' && lessonData && (
+            <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-8 pb-20">
+              
+              {/* Header */}
+              <div className="bg-white rounded-3xl p-8 md:p-12 shadow-md border border-slate-100 text-center relative overflow-hidden">
+                <div className="absolute top-0 left-0 w-full h-3 bg-gradient-to-r from-emerald-500 via-green-400 to-blue-500"></div>
+                
+                {/* Download Actions */}
+                <div className="absolute top-6 right-6 flex gap-2">
+                  <button 
+                    onClick={handleDownloadWord} 
+                    className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-xl transition-colors text-sm font-bold border border-blue-100"
+                    title="Export Word Document (.doc)"
+                  >
+                    <FileDown size={16} /> <span className="hidden sm:inline">Word</span>
+                  </button>
+                  <button 
+                    onClick={handleDownloadPDF} 
+                    className="flex items-center gap-2 px-3 py-1.5 bg-red-50 text-red-700 hover:bg-red-100 rounded-xl transition-colors text-sm font-bold border border-red-100"
+                    title="Export to PDF"
+                  >
+                    <Download size={16} /> <span className="hidden sm:inline">PDF</span>
+                  </button>
+                </div>
+
+                <h1 className="text-4xl md:text-6xl font-extrabold text-slate-800 mb-6 tracking-tight leading-tight mt-6">
+                  {lessonData.title}
+                </h1>
+                <p className="text-xl md:text-2xl text-slate-600 max-w-3xl mx-auto leading-relaxed">
+                  {lessonData.introduction}
+                </p>
+                <div className="mt-8 flex justify-center gap-3">
+                  <span className="inline-flex bg-green-100 text-green-800 px-5 py-2 rounded-full font-bold text-sm border border-green-200 shadow-sm">
+                    {language === 'id' ? `Modul Kelas ${grade}` : `Grade ${grade} Module`}
+                  </span>
+                  <span className="inline-flex bg-blue-100 text-blue-800 px-5 py-2 rounded-full font-bold text-sm border border-blue-200 shadow-sm flex items-center gap-1">
+                    <Sparkles size={14}/> In-Depth
+                  </span>
+                </div>
+              </div>
+
+              {/* Main Content & Summary Grid */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                
+                {/* Main Content (Deep Dive) */}
+                <div className="lg:col-span-2 space-y-8">
+                  <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-200">
+                    <h2 className="text-3xl font-extrabold text-slate-800 mb-8 flex items-center gap-3 border-b pb-4">
+                      <BookMarked className="text-emerald-500" size={32} />
+                      {language === 'id' ? 'Pembahasan Mendalam' : 'In-Depth Discussion'}
+                    </h2>
+                    <div className="space-y-10">
+                      {(lessonData?.mainConcepts || []).map((concept, idx) => {
+                        const title = typeof concept === 'object' ? concept.title : `Konsep ${idx + 1}`;
+                        const explanation = sanitizeText(typeof concept === 'object' ? concept.detailedExplanation : concept);
+                        
+                        return (
+                          <div key={idx} className="relative">
+                            <h3 className="text-xl font-bold text-slate-800 mb-3 flex items-center gap-2">
+                              <span className="bg-emerald-100 text-emerald-700 w-8 h-8 rounded-full flex items-center justify-center text-sm shrink-0">{idx + 1}</span>
+                              {title || `Konsep ${idx + 1}`}
+                            </h3>
+                            <p className="text-slate-700 text-lg leading-relaxed pl-10">
+                              {explanation}
+                            </p>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Examples (Detailed) */}
+                  <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-3xl p-8 shadow-sm border border-blue-100">
+                    <h2 className="text-2xl font-bold text-blue-900 mb-6 flex items-center gap-2">
+                      <Globe className="text-blue-600" />
+                      {language === 'id' ? 'Contoh Dunia Nyata & Studi Kasus' : 'Real World Examples & Case Studies'}
+                    </h2>
+                    <div className="grid gap-6">
+                      {(lessonData?.examples || []).map((ex, idx) => {
+                        const title = typeof ex === 'object' ? ex.title : '';
+                        const desc = sanitizeText(typeof ex === 'object' ? ex.description : ex);
+                        
+                        return (
+                          <div key={idx} className="bg-white p-6 rounded-2xl shadow-sm border border-blue-50">
+                            {title && <h4 className="font-bold text-blue-800 text-lg mb-2">{title}</h4>}
+                            <p className="text-slate-600 leading-relaxed">{desc}</p>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Sidebar Cards */}
+                <div className="space-y-8">
+                  {/* Summary Card */}
+                  <div className="bg-white rounded-3xl p-6 shadow-md border-t-4 border-t-orange-400">
+                    <h3 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
+                      <FileText className="text-orange-500" />
+                      {language === 'id' ? 'Intisari Materi' : 'Key Takeaways'}
+                    </h3>
+                    <p className="text-slate-600 font-medium mb-5 p-4 bg-slate-50 rounded-xl">{lessonData?.summary?.short}</p>
+                    <ul className="space-y-3">
+                      {(lessonData?.summary?.bulletPoints || []).map((point, idx) => (
+                        <li key={idx} className="flex items-start gap-3 text-slate-700 text-sm bg-orange-50 p-3 rounded-lg">
+                          <CheckCircle2 className="text-orange-500 shrink-0 w-5 h-5" />
+                          <span className="mt-0.5 font-medium">{point}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  {/* Fun Facts (Historical & Modern) */}
+                  <div className="bg-gradient-to-b from-purple-50 to-pink-50 rounded-3xl p-6 shadow-sm border border-purple-100">
+                    <h3 className="text-xl font-bold text-purple-900 mb-6 flex items-center gap-2">
+                      <History className="text-purple-600" />
+                      {language === 'id' ? 'Fakta Menarik (Sejarah & Modern)' : 'Fascinating Facts'}
+                    </h3>
+                    <div className="space-y-4">
+                      {(lessonData?.funFacts || []).map((fact, idx) => {
+                        const title = typeof fact === 'object' ? fact.title : '';
+                        const desc = sanitizeText(typeof fact === 'object' ? fact.description : fact);
+                        
+                        return (
+                          <div key={idx} className="bg-white p-4 rounded-2xl shadow-sm border border-purple-50">
+                            {title && <h4 className="font-bold text-purple-800 mb-1">{title}</h4>}
+                            <p className="text-slate-600 text-sm leading-relaxed">{desc}</p>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: QUESTION BANK (BANK SOAL) */}
+          {activeTab === 'questions' && lessonData && (
+            <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-8 pb-20">
+              <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-200 relative overflow-hidden">
+                
+                {/* Download Actions for Questions */}
+                <div className="absolute top-6 right-6 hidden md:flex gap-2 z-10">
+                  <button 
+                    onClick={handleDownloadQuestionsWord} 
+                    className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-xl transition-colors text-sm font-bold border border-blue-100"
+                    title="Export Word Document (.doc)"
+                  >
+                    <FileDown size={16} /> <span>Word</span>
+                  </button>
+                  <button 
+                    onClick={handleDownloadQuestionsPDF} 
+                    className="flex items-center gap-2 px-3 py-1.5 bg-red-50 text-red-700 hover:bg-red-100 rounded-xl transition-colors text-sm font-bold border border-red-100"
+                    title="Export to PDF"
+                  >
+                    <Download size={16} /> <span>PDF</span>
+                  </button>
+                </div>
+
+                <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-slate-100 pb-6 mb-6">
+                  <div className="pr-0 md:pr-40">
+                    <h2 className="text-3xl font-extrabold text-slate-800 mb-2">
+                      {language === 'id' ? 'Bank Soal Komprehensif' : 'Comprehensive Question Bank'}
+                    </h2>
+                    <p className="text-slate-500">
+                      {language === 'id' ? 'Pilih tipe soal yang ingin Anda salin atau gunakan.' : 'Select the type of question you want to copy or use.'}
+                    </p>
+                  </div>
+                  
+                  {/* Mobile Download Buttons */}
+                  <div className="flex md:hidden gap-2 mt-4">
+                    <button onClick={handleDownloadQuestionsWord} className="flex-1 flex justify-center items-center gap-2 px-3 py-2 bg-blue-50 text-blue-700 rounded-xl font-bold border border-blue-100"><FileDown size={16} /> Word</button>
+                    <button onClick={handleDownloadQuestionsPDF} className="flex-1 flex justify-center items-center gap-2 px-3 py-2 bg-red-50 text-red-700 rounded-xl font-bold border border-red-100"><Download size={16} /> PDF</button>
+                  </div>
+
+                  <div className="bg-blue-50 text-blue-700 px-4 py-2 rounded-lg font-bold mt-4 md:mt-0 border border-blue-100 md:absolute md:top-20 md:right-8">
+                    Total: {(lessonData.quiz?.length || 0) + (lessonData.shortAnswer?.length || 0) + (lessonData.essay?.length || 0)} {language === 'id' ? 'Soal' : 'Questions'}
+                  </div>
+                </div>
+
+                {/* Question Sub-Tabs */}
+                <div className="flex flex-wrap gap-3 mb-8 pb-4 border-b border-slate-100">
+                  <button 
+                    onClick={() => setQuestionTab('mcq')} 
+                    className={`px-5 py-2.5 rounded-xl font-bold transition-all text-sm ${questionTab === 'mcq' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                  >
+                    {language === 'id' ? 'A. Pilihan Ganda' : 'A. Multiple Choice'}
+                  </button>
+                  <button 
+                    onClick={() => setQuestionTab('short')} 
+                    className={`px-5 py-2.5 rounded-xl font-bold transition-all text-sm ${questionTab === 'short' ? 'bg-orange-500 text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                  >
+                    {language === 'id' ? 'B. Isian Singkat' : 'B. Short Answer'}
+                  </button>
+                  <button 
+                    onClick={() => setQuestionTab('essay')} 
+                    className={`px-5 py-2.5 rounded-xl font-bold transition-all text-sm ${questionTab === 'essay' ? 'bg-purple-600 text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                  >
+                    {language === 'id' ? 'C. Esai' : 'C. Essay'}
+                  </button>
+                  <button 
+                    onClick={() => setQuestionTab('tts')} 
+                    className={`px-5 py-2.5 rounded-xl font-bold transition-all text-sm ${questionTab === 'tts' ? 'bg-emerald-600 text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                  >
+                    {language === 'id' ? 'D. Teka-Teki Silang' : 'D. Crossword Data'}
+                  </button>
+                </div>
+
+                {/* Multiple Choice Section */}
+                {questionTab === 'mcq' && (
+                  <div className="mb-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <h3 className="text-xl font-bold text-blue-800 mb-6 bg-blue-50 p-4 rounded-xl border border-blue-100 inline-block">
+                      {language === 'id' ? 'Pilihan Ganda' : 'Multiple Choice'} ({(lessonData?.quiz || []).length} {language === 'id' ? 'Soal' : 'Questions'})
+                    </h3>
+                    <div className="space-y-8 px-2 md:px-6">
+                      {(lessonData?.quiz || []).map((q, idx) => (
+                        <div key={idx} className="pb-6 border-b border-dashed border-slate-200">
+                          <p className="font-semibold text-lg text-slate-800 mb-4">{idx + 1}. {q.question}</p>
+                          <ol className="list-[lower-alpha] list-inside space-y-2 mb-4 ml-2">
+                            {(q.options || []).map((opt, oIdx) => (
+                              <li key={oIdx} className="text-slate-700 bg-slate-50 p-2 rounded hover:bg-slate-100">{opt}</li>
+                            ))}
+                          </ol>
+                          <div className="bg-green-50/50 border border-green-100 text-green-800 p-4 rounded-xl text-sm mt-2">
+                            <span className="font-bold uppercase tracking-wider text-xs">{language === 'id' ? 'Kunci Jawaban' : 'Answer Key'}:</span>
+                            <span className="ml-2 font-bold text-base">{q.correctAnswer}</span>
+                            <div className="mt-2 pt-2 border-t border-green-200/50 italic text-slate-600">
+                              <strong>{language === 'id' ? 'Pembahasan:' : 'Explanation:'}</strong> {q.explanation}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Short Answer Section */}
+                {questionTab === 'short' && (
+                  <div className="mb-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <h3 className="text-xl font-bold text-orange-800 mb-6 bg-orange-50 p-4 rounded-xl border border-orange-100 inline-block">
+                      {language === 'id' ? 'Isian Singkat' : 'Short Answer'} ({(lessonData?.shortAnswer || []).length} {language === 'id' ? 'Soal' : 'Questions'})
+                    </h3>
+                    <div className="space-y-6 px-2 md:px-6">
+                      {(lessonData?.shortAnswer || []).map((q, idx) => (
+                        <div key={idx} className="bg-slate-50 p-5 rounded-2xl border border-slate-100">
+                          <p className="font-semibold text-slate-800 mb-3">{idx + 1}. {q.question}</p>
+                          <div className="text-orange-700 font-bold bg-white p-3 rounded-lg border border-orange-100 inline-block">
+                            {language === 'id' ? 'Jawaban:' : 'Answer:'} <span className="underline decoration-orange-300 underline-offset-4">{q.answer}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Essay Section */}
+                {questionTab === 'essay' && (
+                  <div className="mb-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <h3 className="text-xl font-bold text-purple-800 mb-6 bg-purple-50 p-4 rounded-xl border border-purple-100 inline-block">
+                      {language === 'id' ? 'Uraian Mendalam (Esai)' : 'Essay Questions'} ({(lessonData?.essay || []).length} {language === 'id' ? 'Soal' : 'Questions'})
+                    </h3>
+                    <div className="space-y-8 px-2 md:px-6">
+                      {(lessonData?.essay || []).map((q, idx) => (
+                        <div key={idx} className="pb-6 border-b border-dashed border-slate-200">
+                          <p className="font-semibold text-lg text-slate-800 mb-4">{idx + 1}. {q.question}</p>
+                          <div className="bg-purple-50 p-5 rounded-xl text-sm text-purple-900 mt-2 border border-purple-100">
+                            <span className="font-bold uppercase tracking-wider text-xs mb-2 block text-purple-700">{language === 'id' ? 'Rubrik / Panduan Jawaban Guru:' : 'Teacher Answer Guide:'}</span>
+                            <p className="leading-relaxed text-base">{q.answerKey}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Crossword (TTS) Section */}
+                {questionTab === 'tts' && (
+                  <div className="bg-slate-50 p-6 md:p-8 rounded-3xl border border-slate-200 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+                      <h3 className="text-2xl font-bold text-emerald-800 flex items-center gap-2">
+                        <Sparkles size={24} />
+                        {language === 'id' ? 'Data Teka-Teki Silang (TTS)' : 'Crossword Data'}
+                      </h3>
+                      <button 
+                        onClick={handleCopyTTS}
+                        className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-6 py-3 rounded-xl transition-all shadow-md shadow-emerald-200"
+                      >
+                        {ttsCopied ? <CheckCircle size={20} /> : <Copy size={20} />}
+                        {ttsCopied 
+                          ? (language === 'id' ? 'Format Tersalin!' : 'Copied!') 
+                          : (language === 'id' ? 'Salin ke Puzzle Maker' : 'Copy for Puzzle Maker')}
+                      </button>
+                    </div>
+                    <p className="text-slate-600 mb-4 bg-white p-4 rounded-xl border border-emerald-100">
+                      {language === 'id' 
+                        ? 'Fitur ajaib! Salin teks di bawah dan paste ke website pembuat TTS otomatis (seperti CrosswordLabs.com). AI sudah menyusun format baku: "JAWABAN(spasi)Petunjuk".' 
+                        : 'Magic feature! Copy the text below and paste it into an auto crossword maker website (like CrosswordLabs.com). Format is "ANSWER Clue".'}
+                    </p>
+                    <textarea 
+                      readOnly
+                      rows={(lessonData?.crossword || []).length + 1}
+                      className="w-full bg-white border-2 border-emerald-100 rounded-2xl p-6 font-mono text-sm text-slate-800 outline-none resize-none shadow-inner"
+                      value={(lessonData?.crossword || []).map(item => `${(item.word || '').replace(/\s+/g, '').toUpperCase()} ${item.clue || ''}`).join('\n')}
+                    />
+                  </div>
+                )}
+
+              </div>
+            </div>
+          )}
+
+          {/* TAB: INTERACTIVE QUIZ */}
+          {activeTab === 'quiz' && lessonData && (
+            <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-2xl mx-auto pb-20">
+              
+              {!quizState.isComplete ? (
+                <div className="bg-white rounded-3xl shadow-xl border border-slate-200 overflow-hidden">
+                  
+                  {/* Progress Bar */}
+                  <div className="h-3 bg-slate-100 w-full relative">
+                    <div 
+                      className="h-full bg-gradient-to-r from-blue-400 to-indigo-500 transition-all duration-500 ease-out absolute top-0 left-0" 
+                      style={{ width: `${((quizState.currentIndex) / (lessonData?.quiz?.length || 1)) * 100}%` }}
+                    />
+                  </div>
+
+                  <div className="p-8 md:p-10">
+                    <div className="flex justify-between items-center mb-8">
+                      <span className="text-slate-400 font-bold uppercase tracking-widest text-sm bg-slate-50 px-4 py-2 rounded-lg">
+                        {language === 'id' ? 'Soal' : 'Question'} {quizState.currentIndex + 1} / {lessonData?.quiz?.length || 0}
+                      </span>
+                      <span className="bg-yellow-100 text-yellow-700 px-4 py-2 rounded-xl font-black text-sm flex items-center gap-2 shadow-sm border border-yellow-200">
+                        <Trophy size={18}/> {quizState.score} {language === 'id' ? 'Poin' : 'Pts'}
+                      </span>
+                    </div>
+
+                    <h2 className="text-2xl md:text-3xl font-extrabold text-slate-800 mb-8 leading-relaxed">
+                      {lessonData?.quiz?.[quizState.currentIndex]?.question}
+                    </h2>
+
+                    <div className="space-y-4 mb-8">
+                      {(lessonData?.quiz?.[quizState.currentIndex]?.options || []).map((option, idx) => {
+                        const isSelected = quizState.selectedAnswer === option;
+                        const isCorrect = option === lessonData?.quiz?.[quizState.currentIndex]?.correctAnswer;
+                        
+                        let buttonStyle = "bg-white border-slate-200 hover:border-blue-400 hover:bg-blue-50 text-slate-700 shadow-sm";
+                        
+                        if (quizState.showFeedback) {
+                          if (isCorrect) buttonStyle = "bg-green-100 border-green-500 text-green-900 shadow-md";
+                          else if (isSelected && !isCorrect) buttonStyle = "bg-red-50 border-red-400 text-red-900";
+                          else buttonStyle = "bg-slate-50 border-slate-200 text-slate-400 opacity-50";
+                        }
+
+                        return (
+                          <button
+                            key={idx}
+                            onClick={() => handleQuizAnswer(option)}
+                            disabled={quizState.showFeedback}
+                            className={`w-full text-left p-5 rounded-2xl border-2 font-bold text-lg transition-all duration-200 flex items-center justify-between ${buttonStyle}`}
+                          >
+                            <span>{option}</span>
+                            {quizState.showFeedback && isCorrect && <CheckCircle2 className="text-green-600 w-7 h-7" />}
+                            {quizState.showFeedback && isSelected && !isCorrect && <XCircle className="text-red-500 w-7 h-7" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {quizState.showFeedback && (
+                      <div className={`p-6 rounded-2xl mb-8 flex gap-4 items-start animate-in zoom-in-95 duration-300 shadow-inner ${quizState.selectedAnswer === lessonData?.quiz?.[quizState.currentIndex]?.correctAnswer ? 'bg-green-50 text-green-900 border border-green-200' : 'bg-red-50 text-red-900 border border-red-200'}`}>
+                        <div className="mt-1 bg-white p-1 rounded-full shadow-sm">
+                           {quizState.selectedAnswer === lessonData?.quiz?.[quizState.currentIndex]?.correctAnswer ? <CheckCircle2 className="text-green-600 w-8 h-8" /> : <XCircle className="text-red-600 w-8 h-8" />}
+                        </div>
+                        <div>
+                          <p className="font-black text-xl mb-2">
+                            {quizState.selectedAnswer === lessonData?.quiz?.[quizState.currentIndex]?.correctAnswer 
+                              ? (language === 'id' ? 'Tepat Sekali! 🎉' : 'Correct! 🎉') 
+                              : (language === 'id' ? 'Kurang Tepat! 💡' : 'Incorrect! 💡')}
+                          </p>
+                          <p className="text-base leading-relaxed opacity-90">{lessonData?.quiz?.[quizState.currentIndex]?.explanation}</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {quizState.showFeedback && (
+                      <button
+                        onClick={nextQuestion}
+                        className="w-full bg-slate-900 hover:bg-black text-white font-black py-5 rounded-2xl transition-all flex items-center justify-center gap-2 shadow-xl shadow-slate-300 text-lg"
+                      >
+                        {language === 'id' ? 'Lanjut ke Soal Berikutnya' : 'Next Question'} <ArrowRight size={24} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-white rounded-3xl shadow-xl border border-slate-200 p-12 text-center animate-in zoom-in-95">
+                  <div className="w-40 h-40 bg-gradient-to-br from-yellow-200 to-orange-300 text-yellow-700 rounded-full flex items-center justify-center mx-auto mb-8 shadow-inner border-4 border-white">
+                    <Trophy size={80} />
+                  </div>
+                  <h2 className="text-5xl font-black text-slate-800 mb-4 tracking-tight">
+                    {language === 'id' ? 'Luar Biasa!' : 'Outstanding!'}
+                  </h2>
+                  <p className="text-2xl text-slate-600 mb-10">
+                    {language === 'id' ? 'Skor Akhir Kamu:' : 'Your Final Score:'} <span className="font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">{quizState.score}</span> / {(lessonData?.quiz?.length || 0) * 10}
+                  </p>
+                  
+                  <div className="flex flex-col sm:flex-row gap-4 justify-center">
+                    <button 
+                      onClick={() => setQuizState({ isActive: false, currentIndex: 0, score: 0, showFeedback: false, selectedAnswer: null, isComplete: false })}
+                      className="bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold py-4 px-8 rounded-2xl transition-all border border-slate-300 text-lg"
+                    >
+                      {language === 'id' ? 'Main Ulang Kuis' : 'Play Again'}
+                    </button>
+                    <button 
+                      onClick={() => setActiveTab('lesson')}
+                      className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-8 rounded-2xl transition-all shadow-lg shadow-blue-200 text-lg"
+                    >
+                      {language === 'id' ? 'Kembali ke Materi' : 'Back to Lesson'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+            </div>
+          )}
+
+        </div>
+      </main>
+
+      {/* Floating AI Assistant Bar (Refine Prompt) */}
+      {lessonData && activeTab !== 'create' && activeTab !== 'quiz' && activeTab !== 'solver' && (
+        <div className="fixed bottom-0 left-0 md:left-64 right-0 bg-white/85 backdrop-blur-xl border-t border-slate-200 p-4 shadow-[0_-15px_40px_-15px_rgba(0,0,0,0.08)] z-30 animate-in slide-in-from-bottom-full duration-500">
+          <div className="max-w-4xl mx-auto flex gap-3 items-center">
+            <div className="bg-gradient-to-tr from-blue-500 to-indigo-500 text-white p-3 rounded-full hidden sm:flex items-center justify-center shadow-md">
+              <Bot size={24} />
+            </div>
+            <input 
+              type="text"
+              value={refinePrompt}
+              onChange={(e) => setRefinePrompt(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleRefineLesson()}
+              placeholder={language === 'id' ? "Perintah AI (Contoh: Tambahkan studi kasus spesifik tentang Tsunami Aceh...)" : "AI Command (Example: Add specific case study...)"}
+              className="flex-1 bg-white border-2 border-slate-200 rounded-full px-6 py-3.5 outline-none focus:ring-4 focus:ring-blue-100 focus:border-blue-500 transition-all text-slate-800 font-medium shadow-sm"
+              disabled={isRefining}
+            />
+            <button 
+              onClick={handleRefineLesson}
+              disabled={isRefining || !refinePrompt.trim()}
+              className="bg-slate-900 hover:bg-black disabled:bg-slate-300 disabled:cursor-not-allowed text-white p-3.5 px-6 rounded-full font-bold transition-all flex items-center gap-2 shadow-lg shadow-slate-300"
+            >
+              {isRefining ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
+              <span className="hidden sm:block">{language === 'id' ? 'Beri Instruksi' : 'Refine'}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+// Subcomponents
+function NavItem({ icon, label, active, onClick }) {
+  return (
+    <button 
+      onClick={onClick}
+      className={`flex items-center gap-3 p-3 rounded-xl transition-all w-full justify-center md:justify-start ${
+        active 
+          ? 'bg-gradient-to-r from-green-100 to-emerald-50 text-green-800 font-bold shadow-sm border border-green-200/50' 
+          : 'hover:bg-slate-100 text-slate-600 hover:text-slate-900 font-medium'
+      }`}
+    >
+      {icon}
+      <span className="hidden md:block">{label}</span>
+      {active && <ChevronRight size={16} className="hidden md:block ml-auto opacity-50" />}
+    </button>
+  );
+}
+
+function InputTab({ icon, label, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-2 px-5 py-2.5 rounded-full font-bold transition-all text-sm ${
+        active
+          ? 'bg-slate-800 text-white shadow-md'
+          : 'bg-white border-2 border-slate-200 text-slate-600 hover:bg-slate-100 hover:border-slate-300'
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
