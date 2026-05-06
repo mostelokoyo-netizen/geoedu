@@ -115,7 +115,10 @@ const lessonSchema = {
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('create');
+  const [activeTab, setActiveTab] = useState(() => {
+    const saved = localStorage.getItem('geoai_activeTab');
+    return saved || 'create';
+  });
   const [language, setLanguage] = useState('id'); // 'id' or 'en'
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState(null);
@@ -129,7 +132,14 @@ export default function App() {
   const [topic, setTopic] = useState('');
 
   // Generated Content State
-  const [lessonData, setLessonData] = useState(null);
+  const [lessonData, setLessonData] = useState(() => {
+    const saved = localStorage.getItem('geoai_lessonData');
+    try {
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
   const [ttsCopied, setTtsCopied] = useState(false);
 
   // AI Refine State
@@ -145,7 +155,10 @@ export default function App() {
   const [solverError, setSolverError] = useState(null);
 
   // Question Bank Tab State
-  const [questionTab, setQuestionTab] = useState('mcq');
+  const [questionTab, setQuestionTab] = useState(() => {
+    const saved = localStorage.getItem('geoai_questionTab');
+    return saved || 'mcq';
+  });
 
   // Quiz State
   const [quizState, setQuizState] = useState({
@@ -156,6 +169,23 @@ export default function App() {
     selectedAnswer: null,
     isComplete: false
   });
+
+  // --- PERSISTENCE LOGIC (LOCAL STORAGE AUTO-SAVE) ---
+  useEffect(() => {
+    localStorage.setItem('geoai_activeTab', activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (lessonData) {
+      localStorage.setItem('geoai_lessonData', JSON.stringify(lessonData));
+    } else {
+      localStorage.removeItem('geoai_lessonData');
+    }
+  }, [lessonData]);
+
+  useEffect(() => {
+    localStorage.setItem('geoai_questionTab', questionTab);
+  }, [questionTab]);
 
   const handleImageUpload = (e, targetState) => {
     const file = e.target.files[0];
