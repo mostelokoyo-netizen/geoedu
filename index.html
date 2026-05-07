@@ -4,7 +4,7 @@ import {
   PlayCircle, Trophy, Sparkles, ChevronRight, CheckCircle2, 
   XCircle, ArrowRight, Languages, Loader2, BookMarked, Settings, Map,
   FileText, Copy, CheckCircle, User, Bot, Send, HelpCircle, Lightbulb, History, Globe,
-  Download, FileDown
+  Download, FileDown, Save, Folder, Trash2, Clock, Database, Trash, File as FileIcon
 } from 'lucide-react';
 
 const apiKey = ""; // Provided by execution environment
@@ -119,7 +119,7 @@ export default function App() {
     const saved = localStorage.getItem('geoai_activeTab');
     return saved || 'create';
   });
-  const [language, setLanguage] = useState('id'); // 'id' or 'en'
+  const [language, setLanguage] = useState('id');
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState(null);
 
@@ -134,11 +134,7 @@ export default function App() {
   // Generated Content State
   const [lessonData, setLessonData] = useState(() => {
     const saved = localStorage.getItem('geoai_lessonData');
-    try {
-      return saved ? JSON.parse(saved) : null;
-    } catch (e) {
-      return null;
-    }
+    try { return saved ? JSON.parse(saved) : null; } catch (e) { return null; }
   });
   const [ttsCopied, setTtsCopied] = useState(false);
 
@@ -146,10 +142,32 @@ export default function App() {
   const [refinePrompt, setRefinePrompt] = useState('');
   const [isRefining, setIsRefining] = useState(false);
 
+  // Saved Projects State
+  const [savedProjects, setSavedProjects] = useState(() => {
+    const saved = localStorage.getItem('geoai_savedProjects');
+    try { return saved ? JSON.parse(saved) : []; } catch (e) { return []; }
+  });
+  const [saveStatus, setSaveStatus] = useState('');
+  const [currentProjectId, setCurrentProjectId] = useState(() => {
+    return localStorage.getItem('geoai_currentProjectId') || null;
+  });
+
+  // Global Question Bank State
+  const [globalQuestions, setGlobalQuestions] = useState(() => {
+    const saved = localStorage.getItem('geoai_globalQuestions');
+    try { return saved ? JSON.parse(saved) : []; } catch (e) { return []; }
+  });
+  const [globalSaveStatus, setGlobalSaveStatus] = useState('');
+  const [globalTab, setGlobalTab] = useState('mcq');
+
   // AI Solver State
   const [solverInputType, setSolverInputType] = useState('text');
   const [solverText, setSolverText] = useState('');
   const [solverImageBase64, setSolverImageBase64] = useState(null);
+  const [solverDocName, setSolverDocName] = useState('');
+  const [solverDocText, setSolverDocText] = useState('');
+  const [solverDocBase64, setSolverDocBase64] = useState(null);
+  
   const [solverResult, setSolverResult] = useState(null);
   const [isSolving, setIsSolving] = useState(false);
   const [solverError, setSolverError] = useState(null);
@@ -162,30 +180,32 @@ export default function App() {
 
   // Quiz State
   const [quizState, setQuizState] = useState({
-    isActive: false,
-    currentIndex: 0,
-    score: 0,
-    showFeedback: false,
-    selectedAnswer: null,
-    isComplete: false
+    isActive: false, currentIndex: 0, score: 0, showFeedback: false, selectedAnswer: null, isComplete: false
   });
 
-  // --- PERSISTENCE LOGIC (LOCAL STORAGE AUTO-SAVE) ---
+  // Load Mammoth JS for DOCX Parsing
   useEffect(() => {
-    localStorage.setItem('geoai_activeTab', activeTab);
-  }, [activeTab]);
-
-  useEffect(() => {
-    if (lessonData) {
-      localStorage.setItem('geoai_lessonData', JSON.stringify(lessonData));
-    } else {
-      localStorage.removeItem('geoai_lessonData');
+    if (!document.getElementById('mammoth-script')) {
+      const script = document.createElement('script');
+      script.id = 'mammoth-script';
+      script.src = "https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js";
+      document.head.appendChild(script);
     }
-  }, [lessonData]);
+  }, []);
 
+  // --- PERSISTENCE LOGIC (LOCAL STORAGE AUTO-SAVE) ---
+  useEffect(() => { localStorage.setItem('geoai_activeTab', activeTab); }, [activeTab]);
   useEffect(() => {
-    localStorage.setItem('geoai_questionTab', questionTab);
-  }, [questionTab]);
+    if (lessonData) localStorage.setItem('geoai_lessonData', JSON.stringify(lessonData));
+    else localStorage.removeItem('geoai_lessonData');
+  }, [lessonData]);
+  useEffect(() => { localStorage.setItem('geoai_questionTab', questionTab); }, [questionTab]);
+  useEffect(() => { localStorage.setItem('geoai_savedProjects', JSON.stringify(savedProjects)); }, [savedProjects]);
+  useEffect(() => {
+    if (currentProjectId) localStorage.setItem('geoai_currentProjectId', currentProjectId);
+    else localStorage.removeItem('geoai_currentProjectId');
+  }, [currentProjectId]);
+  useEffect(() => { localStorage.setItem('geoai_globalQuestions', JSON.stringify(globalQuestions)); }, [globalQuestions]);
 
   const handleImageUpload = (e, targetState) => {
     const file = e.target.files[0];
@@ -199,6 +219,48 @@ export default function App() {
     }
   };
 
+  const handleDocumentUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setSolverDocName(file.name);
+    setSolverDocText('');
+    setSolverDocBase64(null);
+    setSolverError(null);
+
+    if (file.type === 'application/pdf') {
+       const reader = new FileReader();
+       reader.onloadend = () => {
+          setSolverDocBase64({ mimeType: file.type, data: reader.result.split(',')[1] });
+       };
+       reader.readAsDataURL(file);
+    } else if (file.type === 'text/plain') {
+       const reader = new FileReader();
+       reader.onloadend = () => {
+          setSolverDocText(reader.result);
+       };
+       reader.readAsText(file);
+    } else if (file.name.endsWith('.docx') || file.name.endsWith('.doc')) {
+       const reader = new FileReader();
+       reader.onloadend = () => {
+          if (window.mammoth) {
+             window.mammoth.extractRawText({arrayBuffer: reader.result})
+               .then(result => {
+                 setSolverDocText(result.value);
+                 if (!result.value.trim()) setSolverError(language === 'id' ? "Dokumen Word kosong atau tidak dapat terbaca isinya." : "Word document is empty or unreadable.");
+               })
+               .catch(err => setSolverError(language === 'id' ? "Gagal mengekstrak teks dari file Word." : "Failed to extract text from Word file."));
+          } else {
+             setSolverError(language === 'id' ? "Library pembaca Word belum dimuat, silakan muat ulang halaman." : "Word reader library not loaded, please refresh.");
+          }
+       };
+       reader.readAsArrayBuffer(file);
+    } else {
+       setSolverError(language === 'id' ? "Format file tidak didukung. Harap gunakan PDF, TXT, atau DOCX." : "File format not supported. Use PDF, TXT, or DOCX.");
+       setSolverDocName('');
+    }
+  };
+
   const generateLesson = async () => {
     setIsGenerating(true);
     setError(null);
@@ -208,32 +270,27 @@ export default function App() {
     let contentParts = [];
     let promptContext = "";
 
-    if (inputType === 'text') {
-      promptContext = `Bahan materi: ${rawText}`;
-      contentParts.push({ text: promptContext });
-    } else if (inputType === 'url') {
-      promptContext = `Buat materi berdasarkan topik dari URL ini: ${inputUrl} (Anggap kamu membaca isinya)`;
-      contentParts.push({ text: promptContext });
-    } else if (inputType === 'image' && imageBase64) {
+    if (inputType === 'text') promptContext = `Bahan materi: ${rawText}`;
+    else if (inputType === 'url') promptContext = `Buat materi berdasarkan topik dari URL ini: ${inputUrl} (Anggap kamu membaca isinya)`;
+    else if (inputType === 'image' && imageBase64) {
       promptContext = `Buat materi Geografi berdasarkan gambar yang saya unggah ini.`;
-      contentParts.push({ text: promptContext });
       contentParts.push({ inlineData: imageBase64 });
-    } else if (topic) {
-        promptContext = `Buat materi Geografi tentang topik: ${topic}.`;
-        contentParts.push({ text: promptContext });
-    } else {
+    }
+    else if (topic) promptContext = `Buat materi Geografi tentang topik: ${topic}.`;
+    else {
         setError(language === 'id' ? "Harap masukkan materi atau topik." : "Please input material or topic.");
         setIsGenerating(false);
         return;
     }
+
+    contentParts.unshift({ text: promptContext });
 
     const systemInstruction = `
       You are an expert, insightful, and engaging Geography teacher for Grade ${grade} students.
       Your task is to convert raw inputs into highly structured, VERY DETAILED, and engaging learning materials.
       Do not just give surface-level summaries. Go deep into the "Why" and "How".
       Include rich historical contexts, modern discoveries, and fascinating real-world examples.
-      Make it feel like a premium educational module.
-      IMPORTANT STRICT RULE: Ensure NO raw JSON syntax (like ',"title":', brackets, or keys) leaks into the string values. Provide clean, grammatically correct text ONLY inside the properties.
+      IMPORTANT STRICT RULE: Ensure NO raw JSON syntax (like ',"title":', brackets, or keys) leaks into the string values. Provide clean text ONLY.
       ${langInstruction}
     `;
 
@@ -243,93 +300,98 @@ export default function App() {
     const payload = {
       contents: [{ role: "user", parts: contentParts }],
       systemInstruction: { parts: [{ text: systemInstruction }] },
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseSchema: lessonSchema
-      }
+      generationConfig: { responseMimeType: "application/json", responseSchema: lessonSchema }
     };
 
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-      const result = await fetchWithRetry(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
+      const result = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
       if (generatedText) {
         const parsedData = JSON.parse(generatedText);
         setLessonData(parsedData);
+        
+        // Auto-save to projects immediately
+        const newId = Date.now();
+        setCurrentProjectId(newId);
+        const newProject = {
+          id: newId,
+          title: parsedData.title || 'Untitled Module',
+          date: new Date().toLocaleDateString(language === 'id' ? 'id-ID' : 'en-US', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+          data: parsedData
+        };
+        setSavedProjects(prev => [newProject, ...prev]);
+
         setActiveTab('lesson');
         setQuestionTab('mcq');
         setQuizState({ isActive: false, currentIndex: 0, score: 0, showFeedback: false, selectedAnswer: null, isComplete: false });
       } else {
         setError(language === 'id' ? "Gagal menghasilkan materi. Silakan coba lagi." : "Failed to generate lesson. Please try again.");
       }
-    } catch (err) {
-      setError(`Error: ${err.message}. Pastikan API key tersedia dan valid.`);
-    } finally {
-      setIsGenerating(false);
-    }
+    } catch (err) { setError(`Error: ${err.message}.`); } 
+    finally { setIsGenerating(false); }
   };
 
   const solveQuestion = async () => {
-    // ... (solver logic remains exactly the same)
-    if (!solverText && !solverImageBase64) {
-      setSolverError(language === 'id' ? "Harap masukkan teks soal atau unggah gambar soal." : "Please input question text or upload an image.");
-      return;
+    let contentParts = [];
+
+    if (solverInputType === 'text') {
+      if (!solverText) { setSolverError(language === 'id' ? "Harap masukkan teks soal." : "Please input question text."); return; }
+      contentParts.push({ text: `Tolong jawab dan analisis soal/tugas berikut secara rinci:\n\n${solverText}` });
+    } else if (solverInputType === 'image') {
+      if (!solverImageBase64) { setSolverError(language === 'id' ? "Harap unggah gambar soal." : "Please upload an image."); return; }
+      contentParts.push({ text: "Tolong analisis gambar soal/tugas berikut dan berikan jawabannya secara rinci." });
+      contentParts.push({ inlineData: solverImageBase64 });
+    } else if (solverInputType === 'document') {
+      if (!solverDocText && !solverDocBase64) { setSolverError(language === 'id' ? "Harap unggah dokumen terlebih dahulu." : "Please upload a document first."); return; }
+      contentParts.push({ text: "Tolong analisis dokumen soal berikut dan berikan jawabannya secara rinci." });
+      if (solverDocText) contentParts.push({ text: `Isi dokumen yang diekstrak:\n\n${solverDocText}` });
+      if (solverDocBase64) contentParts.push({ inlineData: solverDocBase64 });
     }
 
     setIsSolving(true);
     setSolverError(null);
     setSolverResult(null);
 
-    let contentParts = [];
-    if (solverInputType === 'text') {
-      contentParts.push({ text: `Tolong jawab soal berikut secara rinci: ${solverText}` });
-    } else if (solverInputType === 'image' && solverImageBase64) {
-      contentParts.push({ text: "Tolong analisis gambar/dokumen soal berikut dan berikan jawabannya secara rinci." });
-      contentParts.push({ inlineData: solverImageBase64 });
-    }
-
     const payload = {
       contents: [{ role: "user", parts: contentParts }],
-      systemInstruction: { parts: [{ text: `You are an expert, highly intelligent Geography tutor. Your job is to solve the user's questions accurately. Provide a clear answer, a step-by-step detailed explanation, and list the key concepts involved. Respond in ${language === 'id' ? 'Indonesian' : 'English'}.` }] },
+      systemInstruction: { parts: [{ text: `You are an expert, highly intelligent Geography tutor. The user will upload a document, image, or text that may contain ONE or MULTIPLE questions. Your job is to extract EACH individual question, solve it accurately, and provide a deep, step-by-step explanation for EVERY SINGLE question separately. Do NOT clump all answers into one paragraph. Respond in ${language === 'id' ? 'Indonesian' : 'English'}.` }] },
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: {
           type: "OBJECT",
           properties: {
-            questionSummary: { type: "STRING" },
-            answer: { type: "STRING" },
-            detailedExplanation: { type: "STRING" },
-            keyConcepts: { type: "ARRAY", items: { type: "STRING" } }
+            overallSummary: { type: "STRING", description: "Brief summary of the document or questions provided." },
+            solvedQuestions: {
+              type: "ARRAY",
+              description: "List of all questions found and solved.",
+              items: {
+                type: "OBJECT",
+                properties: {
+                  originalQuestion: { type: "STRING", description: "The specific question being answered." },
+                  answer: { type: "STRING", description: "The direct, clear answer." },
+                  detailedExplanation: { type: "STRING", description: "In-depth, step-by-step explanation and context." },
+                  keyConcepts: { type: "ARRAY", items: { type: "STRING" } }
+                }
+              }
+            }
           },
-          required: ["questionSummary", "answer", "detailedExplanation", "keyConcepts"]
+          required: ["overallSummary", "solvedQuestions"]
         }
       }
     };
 
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-      const result = await fetchWithRetry(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      const result = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
       if (generatedText) setSolverResult(JSON.parse(generatedText));
       else setSolverError(language === 'id' ? "Gagal menjawab soal." : "Failed to solve question.");
-    } catch (err) {
-      setSolverError(`Error: ${err.message}`);
-    } finally {
-      setIsSolving(false);
-    }
+    } catch (err) { setSolverError(`Error: ${err.message}`); } 
+    finally { setIsSolving(false); }
   };
 
   const handleRefineLesson = async () => {
-    // ... (refine logic remains the same)
     if (!refinePrompt.trim() || !lessonData) return;
     setIsRefining(true);
     setError(null);
@@ -352,8 +414,17 @@ export default function App() {
       const result = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
       if (generatedText) {
-        setLessonData(JSON.parse(generatedText));
+        const parsedData = JSON.parse(generatedText);
+        setLessonData(parsedData);
         setRefinePrompt('');
+
+        if (currentProjectId) {
+           setSavedProjects(prev => prev.map(p => 
+             p.id === currentProjectId 
+               ? { ...p, data: parsedData, date: new Date().toLocaleDateString(language === 'id' ? 'id-ID' : 'en-US', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }) } 
+               : p
+           ));
+        }
       } else {
         setError(language === 'id' ? "Gagal merevisi materi." : "Failed to refine lesson.");
       }
@@ -361,12 +432,78 @@ export default function App() {
     finally { setIsRefining(false); }
   };
 
+  // --- Project & Global Bank Management Functions ---
+  const handleSaveProject = () => {
+    if (!lessonData) return;
+    if (currentProjectId) {
+      setSavedProjects(prev => prev.map(p => 
+        p.id === currentProjectId ? { ...p, data: lessonData, date: new Date().toLocaleDateString(language === 'id' ? 'id-ID' : 'en-US', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }) } : p
+      ));
+    } else {
+      const newProject = {
+        id: Date.now(), title: lessonData.title || 'Untitled Module',
+        date: new Date().toLocaleDateString(language === 'id' ? 'id-ID' : 'en-US', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+        data: lessonData
+      };
+      setSavedProjects(prev => [newProject, ...prev]);
+      setCurrentProjectId(newProject.id);
+    }
+    setSaveStatus(language === 'id' ? 'Tersimpan!' : 'Saved!');
+    setTimeout(() => setSaveStatus(''), 2500);
+  };
+
+  const loadProject = (project) => {
+    setLessonData(project.data);
+    setCurrentProjectId(project.id);
+    setActiveTab('lesson');
+    setQuestionTab('mcq');
+    setQuizState({ isActive: false, currentIndex: 0, score: 0, showFeedback: false, selectedAnswer: null, isComplete: false });
+  };
+
+  const deleteProject = (id) => {
+    setSavedProjects(prev => prev.filter(p => p.id !== id));
+    if (currentProjectId === id) {
+      setCurrentProjectId(null); setLessonData(null); setActiveTab('create');
+    }
+  };
+
+  // Save Questions to Global Bank
+  const saveToGlobalBank = () => {
+    if (!lessonData) return;
+    const timestamp = new Date().toLocaleDateString(language === 'id' ? 'id-ID' : 'en-US');
+    const sourceModule = lessonData.title || 'Unknown Module';
+    const existingQs = JSON.stringify(globalQuestions);
+
+    let newQs = [];
+    const addIfUnique = (q, type) => {
+      // Basic uniqueness check based on the question text
+      if (!existingQs.includes(q.question)) {
+         newQs.push({ ...q, id: Date.now() + Math.random(), type, sourceModule, date: timestamp });
+      }
+    };
+
+    (lessonData.quiz || []).forEach(q => addIfUnique(q, 'mcq'));
+    (lessonData.shortAnswer || []).forEach(q => addIfUnique(q, 'short'));
+    (lessonData.essay || []).forEach(q => addIfUnique(q, 'essay'));
+
+    if (newQs.length > 0) {
+      setGlobalQuestions(prev => [...newQs, ...prev]);
+      setGlobalSaveStatus(language === 'id' ? `+ ${newQs.length} Soal!` : `+ ${newQs.length} Saved!`);
+    } else {
+      setGlobalSaveStatus(language === 'id' ? 'Sudah Disimpan' : 'Already Saved');
+    }
+    setTimeout(() => setGlobalSaveStatus(''), 3000);
+  };
+
+  const deleteFromGlobalBank = (id) => {
+    setGlobalQuestions(prev => prev.filter(q => q.id !== id));
+  };
+
   // --- Export Functions ---
   const generateExportHTML = () => {
     if (!lessonData) return '';
     let html = `<h1 style="color: #059669; border-bottom: 2px solid #10b981; padding-bottom: 10px;">${lessonData.title}</h1>`;
     html += `<p style="font-size: 1.1em; color: #4b5563;"><em>${lessonData.introduction}</em></p>`;
-    
     html += `<h2 style="color: #2563eb; margin-top: 30px;">Materi Utama</h2>`;
     (lessonData.mainConcepts || []).forEach((c, i) => {
        const title = typeof c === 'object' ? c.title : `Konsep ${i+1}`;
@@ -374,7 +511,6 @@ export default function App() {
        if (typeof desc === 'string') desc = desc.replace(/",\s*"title":\s*".*?",\s*"detailedExplanation":\s*"/g, ' ').replace(/",\s*"title":\s*".*?",\s*"description":\s*"/g, ' ').replace(/\}$/g, '');
        html += `<h3 style="color: #0f766e; margin-bottom: 5px;">${i+1}. ${title}</h3><p style="margin-top: 0;">${desc}</p>`;
     });
-
     html += `<h2 style="color: #2563eb; margin-top: 30px;">Contoh Dunia Nyata</h2>`;
     (lessonData.examples || []).forEach(ex => {
        const title = typeof ex === 'object' ? ex.title : '';
@@ -383,7 +519,6 @@ export default function App() {
        if(title) html += `<h4 style="color: #4338ca; margin-bottom: 5px;">${title}</h4>`;
        html += `<p style="margin-top: 0;">${desc}</p>`;
     });
-
     html += `<h2 style="color: #2563eb; margin-top: 30px;">Fakta Menarik</h2><ul style="background: #f9fafb; padding: 20px 40px; border-radius: 8px;">`;
     (lessonData.funFacts || []).forEach(f => {
        const title = typeof f === 'object' ? f.title : '';
@@ -392,31 +527,29 @@ export default function App() {
        html += `<li style="margin-bottom: 10px;"><strong>${title}</strong>: ${desc}</li>`;
     });
     html += `</ul>`;
-
     html += `<h2 style="color: #2563eb; margin-top: 30px;">Ringkasan</h2>`;
     html += `<p style="font-weight: bold; color: #ea580c;">${lessonData.summary?.short}</p><ul>`;
     (lessonData.summary?.bulletPoints || []).forEach(bp => { html += `<li>${bp}</li>`; });
     html += `</ul>`;
-
     return html;
   };
 
-  const generateExportQuestionsHTML = () => {
-    if (!lessonData) return '';
+  const generateExportQuestionsHTML = (sourceData = lessonData, isGlobal = false) => {
+    if (!sourceData) return '';
     const isId = language === 'id';
     let html = `<div style="font-family: Arial, sans-serif; color: #1e293b; line-height: 1.6; max-width: 800px; margin: auto;">`;
-    html += `<h1 style="text-align: center; color: #0f172a; border-bottom: 2px solid #cbd5e1; padding-bottom: 15px; margin-bottom: 30px;">${isId ? 'Bank Soal' : 'Question Bank'}: ${lessonData.title}</h1>`;
+    html += `<h1 style="text-align: center; color: #0f172a; border-bottom: 2px solid #cbd5e1; padding-bottom: 15px; margin-bottom: 30px;">${isId ? 'Bank Soal' : 'Question Bank'}: ${isGlobal ? 'Koleksi Global' : sourceData.title}</h1>`;
 
-    // A. Multiple Choice
-    if (lessonData.quiz && lessonData.quiz.length > 0) {
+    const getQuestions = (type) => isGlobal ? sourceData.filter(q => q.type === type) : sourceData[type] || [];
+
+    const mcqs = getQuestions(isGlobal ? 'mcq' : 'quiz');
+    if (mcqs.length > 0) {
       html += `<h2 style="color: #1e40af; border-bottom: 1px solid #bfdbfe; padding-bottom: 5px;">A. ${isId ? 'Pilihan Ganda' : 'Multiple Choice'}</h2>`;
-      lessonData.quiz.forEach((q, i) => {
+      mcqs.forEach((q, i) => {
         html += `<div style="margin-bottom: 25px; page-break-inside: avoid;">`;
         html += `<p style="font-weight: bold; margin-bottom: 8px;">${i + 1}. ${q.question}</p>`;
         html += `<ol type="a" style="margin-top: 0; margin-bottom: 12px; padding-left: 20px;">`;
-        (q.options || []).forEach(opt => {
-          html += `<li style="margin-bottom: 4px;">${opt}</li>`;
-        });
+        (q.options || []).forEach(opt => { html += `<li style="margin-bottom: 4px;">${opt}</li>`; });
         html += `</ol>`;
         html += `<div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; padding: 12px; border-radius: 6px;">`;
         html += `<strong style="color: #166534;">${isId ? 'Kunci Jawaban' : 'Answer Key'}:</strong> ${q.correctAnswer}<br/>`;
@@ -425,10 +558,10 @@ export default function App() {
       });
     }
 
-    // B. Short Answer
-    if (lessonData.shortAnswer && lessonData.shortAnswer.length > 0) {
+    const shorts = getQuestions('shortAnswer');
+    if (shorts.length > 0) {
       html += `<h2 style="color: #c2410c; border-bottom: 1px solid #fed7aa; padding-bottom: 5px; margin-top: 40px;">B. ${isId ? 'Isian Singkat' : 'Short Answer'}</h2>`;
-      lessonData.shortAnswer.forEach((q, i) => {
+      shorts.forEach((q, i) => {
         html += `<div style="margin-bottom: 20px; page-break-inside: avoid;">`;
         html += `<p style="font-weight: bold; margin-bottom: 5px;">${i + 1}. ${q.question}</p>`;
         html += `<p style="margin-top: 0; color: #9a3412; background-color: #fff7ed; padding: 8px; border-radius: 4px; display: inline-block;"><strong>${isId ? 'Jawaban' : 'Answer'}:</strong> ${q.answer}</p>`;
@@ -436,10 +569,10 @@ export default function App() {
       });
     }
 
-    // C. Essay
-    if (lessonData.essay && lessonData.essay.length > 0) {
+    const essays = getQuestions('essay');
+    if (essays.length > 0) {
       html += `<h2 style="color: #7e22ce; border-bottom: 1px solid #e9d5ff; padding-bottom: 5px; margin-top: 40px;">C. ${isId ? 'Esai / Uraian' : 'Essay'}</h2>`;
-      lessonData.essay.forEach((q, i) => {
+      essays.forEach((q, i) => {
         html += `<div style="margin-bottom: 25px; page-break-inside: avoid;">`;
         html += `<p style="font-weight: bold; margin-bottom: 8px;">${i + 1}. ${q.question}</p>`;
         html += `<div style="background-color: #faf5ff; border: 1px solid #e9d5ff; padding: 12px; border-radius: 6px; color: #581c87;">`;
@@ -447,98 +580,33 @@ export default function App() {
         html += `</div></div>`;
       });
     }
-
-    // D. TTS
-    if (lessonData.crossword && lessonData.crossword.length > 0) {
-      html += `<h2 style="color: #047857; border-bottom: 1px solid #a7f3d0; padding-bottom: 5px; margin-top: 40px;">D. ${isId ? 'Data Teka-Teki Silang (TTS)' : 'Crossword Data'}</h2>`;
-      html += `<pre style="background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 15px; border-radius: 6px; font-family: monospace; white-space: pre-wrap; word-wrap: break-word;">`;
-      const ttsData = lessonData.crossword.map(item => `${(item.word || '').replace(/\s+/g, '').toUpperCase()} ${item.clue || ''}`).join('\n');
-      html += ttsData;
-      html += `</pre>`;
-    }
-
     html += `</div>`;
     return html;
   };
 
-  const handleDownloadWord = () => {
-    const htmlContent = generateExportHTML();
-    const header = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>Materi Geografi</title></head><body>";
-    const footer = "</body></html>";
-    const sourceHTML = header + htmlContent + footer;
-    
-    const source = 'data:application/vnd.ms-word;charset=utf-8,' + encodeURIComponent(sourceHTML);
-    const fileDownload = document.createElement("a");
-    document.body.appendChild(fileDownload);
-    fileDownload.href = source;
-    fileDownload.download = `${(lessonData?.title || 'Materi_Geografi').replace(/\s+/g, '_')}.doc`;
-    fileDownload.click();
-    document.body.removeChild(fileDownload);
+  const executeDownload = (htmlContent, fileName, type = 'doc') => {
+    if (type === 'doc') {
+      const sourceHTML = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>Export</title></head><body>" + htmlContent + "</body></html>";
+      const source = 'data:application/vnd.ms-word;charset=utf-8,' + encodeURIComponent(sourceHTML);
+      const fileDownload = document.createElement("a");
+      document.body.appendChild(fileDownload);
+      fileDownload.href = source; fileDownload.download = fileName; fileDownload.click();
+      document.body.removeChild(fileDownload);
+    } else if (type === 'pdf') {
+      const printWindow = window.open('', '_blank');
+      printWindow.document.write(`<html><head><title>${fileName}</title><style>body { font-family: 'Segoe UI', sans-serif; line-height: 1.6; color: #1e293b; padding: 40px; max-width: 800px; margin: 0 auto; } @media print { body { padding: 0; max-width: 100%; } @page { margin: 2cm; } }</style></head><body>${htmlContent}<script>setTimeout(() => { window.print(); window.close(); }, 500);</script></body></html>`);
+      printWindow.document.close();
+    }
   };
 
-  const handleDownloadQuestionsWord = () => {
-    const htmlContent = generateExportQuestionsHTML();
-    const header = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>Bank Soal Geografi</title></head><body>";
-    const footer = "</body></html>";
-    const sourceHTML = header + htmlContent + footer;
-    
-    const source = 'data:application/vnd.ms-word;charset=utf-8,' + encodeURIComponent(sourceHTML);
-    const fileDownload = document.createElement("a");
-    document.body.appendChild(fileDownload);
-    fileDownload.href = source;
-    fileDownload.download = `Bank_Soal_${(lessonData?.title || 'Geografi').replace(/\s+/g, '_')}.doc`;
-    fileDownload.click();
-    document.body.removeChild(fileDownload);
-  };
+  const handleDownloadWord = () => executeDownload(generateExportHTML(), `${(lessonData?.title || 'Materi_Geografi').replace(/\s+/g, '_')}.doc`, 'doc');
+  const handleDownloadPDF = () => executeDownload(generateExportHTML(), `${lessonData?.title || 'PDF Export'}`, 'pdf');
+  
+  const handleDownloadQuestionsWord = () => executeDownload(generateExportQuestionsHTML(), `Bank_Soal_${(lessonData?.title || 'Geografi').replace(/\s+/g, '_')}.doc`, 'doc');
+  const handleDownloadQuestionsPDF = () => executeDownload(generateExportQuestionsHTML(), `Bank_Soal_Export`, 'pdf');
 
-  const handleDownloadPDF = () => {
-    const htmlContent = generateExportHTML();
-    const printWindow = window.open('', '_blank');
-    printWindow.document.write(`
-      <html>
-        <head>
-          <title>${lessonData?.title || 'PDF Export'}</title>
-          <style>
-            body { font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #1e293b; padding: 40px; max-width: 800px; margin: 0 auto; }
-            @media print { body { padding: 0; max-width: 100%; } }
-          </style>
-        </head>
-        <body>
-          ${htmlContent}
-          <script>
-            setTimeout(() => { window.print(); window.close(); }, 500);
-          </script>
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
-  };
-
-  const handleDownloadQuestionsPDF = () => {
-    const htmlContent = generateExportQuestionsHTML();
-    const printWindow = window.open('', '_blank');
-    printWindow.document.write(`
-      <html>
-        <head>
-          <title>Bank Soal - ${lessonData?.title || 'PDF Export'}</title>
-          <style>
-            body { font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #1e293b; padding: 40px; max-width: 800px; margin: 0 auto; }
-            @media print { 
-              body { padding: 0; max-width: 100%; }
-              @page { margin: 2cm; }
-            }
-          </style>
-        </head>
-        <body>
-          ${htmlContent}
-          <script>
-            setTimeout(() => { window.print(); window.close(); }, 500);
-          </script>
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
-  };
+  const handleDownloadGlobalWord = () => executeDownload(generateExportQuestionsHTML(globalQuestions, true), `Koleksi_Soal_Global.doc`, 'doc');
+  const handleDownloadGlobalPDF = () => executeDownload(generateExportQuestionsHTML(globalQuestions, true), `Koleksi_Soal_Global`, 'pdf');
 
   // Quiz Helpers
   const handleQuizAnswer = (option) => {
@@ -560,18 +628,11 @@ export default function App() {
   const handleCopyTTS = () => {
     const textToCopy = (lessonData?.crossword || []).map(item => `${(item.word || '').replace(/\s+/g, '').toUpperCase()} ${item.clue || ''}`).join('\n');
     const textArea = document.createElement("textarea");
-    textArea.value = textToCopy;
-    document.body.appendChild(textArea);
-    textArea.select();
-    try {
-      document.execCommand('copy');
-      setTtsCopied(true);
-      setTimeout(() => setTtsCopied(false), 2000);
-    } catch (err) { console.error('Failed to copy', err); }
+    textArea.value = textToCopy; document.body.appendChild(textArea); textArea.select();
+    try { document.execCommand('copy'); setTtsCopied(true); setTimeout(() => setTtsCopied(false), 2000); } catch (err) {}
     document.body.removeChild(textArea);
   };
 
-  // UI Safe Render Helper (Sanitizer)
   const sanitizeText = (text) => {
     if (typeof text !== 'string') return '';
     return text.replace(/",\s*"title":\s*".*?",\s*"detailedExplanation":\s*"/g, ' ')
@@ -591,6 +652,8 @@ export default function App() {
         
         <nav className="flex flex-col gap-2 w-full">
           <NavItem icon={<Sparkles size={20} />} label={language === 'id' ? "Buat Materi" : "Create Lesson"} active={activeTab === 'create'} onClick={() => setActiveTab('create')} />
+          <NavItem icon={<Folder size={20} />} label={language === 'id' ? "Proyek Tersimpan" : "Saved Projects"} active={activeTab === 'saved'} onClick={() => setActiveTab('saved')} />
+          <NavItem icon={<Database size={20} />} label={language === 'id' ? "Koleksi Soal" : "Global Bank"} active={activeTab === 'global'} onClick={() => setActiveTab('global')} />
           <NavItem icon={<HelpCircle size={20} />} label={language === 'id' ? "AI Penjawab Soal" : "AI Solver"} active={activeTab === 'solver'} onClick={() => setActiveTab('solver')} />
           
           {lessonData && (
@@ -753,6 +816,95 @@ export default function App() {
             </div>
           )}
 
+          {/* TAB: GLOBAL QUESTION BANK */}
+          {activeTab === 'global' && (
+            <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-5xl mx-auto pb-20">
+              <header className="mb-8 border-b border-slate-200 pb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h1 className="text-3xl font-extrabold text-slate-800 mb-2 flex items-center gap-3">
+                    <Database className="text-emerald-500" size={32} />
+                    {language === 'id' ? 'Koleksi Soal Global' : 'Global Question Bank'}
+                  </h1>
+                  <p className="text-slate-500 text-lg">
+                    {language === 'id' ? 'Semua soal terbaik yang Anda simpan dari berbagai modul.' : 'All the best questions you saved from various modules.'}
+                  </p>
+                </div>
+                
+                {globalQuestions.length > 0 && (
+                  <div className="flex gap-2">
+                    <button onClick={handleDownloadGlobalWord} className="flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-xl transition-colors text-sm font-bold border border-blue-100">
+                      <FileDown size={16} /> Word
+                    </button>
+                    <button onClick={handleDownloadGlobalPDF} className="flex items-center gap-2 px-3 py-2 bg-red-50 text-red-700 hover:bg-red-100 rounded-xl transition-colors text-sm font-bold border border-red-100">
+                      <Download size={16} /> PDF
+                    </button>
+                  </div>
+                )}
+              </header>
+
+              {globalQuestions.length === 0 ? (
+                <div className="bg-white rounded-3xl border-2 border-dashed border-slate-200 p-12 text-center">
+                  <div className="w-20 h-20 bg-emerald-50 rounded-full flex items-center justify-center mx-auto mb-4 text-emerald-300">
+                    <Database size={40} />
+                  </div>
+                  <h3 className="text-xl font-bold text-slate-700 mb-2">{language === 'id' ? 'Koleksi Masih Kosong' : 'Collection is Empty'}</h3>
+                  <p className="text-slate-500 mb-6">{language === 'id' ? 'Buka tab "Bank Soal" pada suatu modul dan klik "Simpan ke Koleksi" untuk menambahkan soal ke sini.' : 'Open "Question Bank" in any module and click "Save to Collection" to add questions here.'}</p>
+                </div>
+              ) : (
+                <div className="bg-white rounded-3xl p-6 md:p-8 shadow-sm border border-slate-200">
+                  <div className="flex flex-wrap gap-3 mb-8 pb-4 border-b border-slate-100">
+                    <button onClick={() => setGlobalTab('mcq')} className={`px-5 py-2.5 rounded-xl font-bold transition-all text-sm ${globalTab === 'mcq' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                      {language === 'id' ? 'Pilihan Ganda' : 'Multiple Choice'} ({globalQuestions.filter(q=>q.type==='mcq').length})
+                    </button>
+                    <button onClick={() => setGlobalTab('short')} className={`px-5 py-2.5 rounded-xl font-bold transition-all text-sm ${globalTab === 'short' ? 'bg-orange-500 text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                      {language === 'id' ? 'Isian Singkat' : 'Short Answer'} ({globalQuestions.filter(q=>q.type==='short').length})
+                    </button>
+                    <button onClick={() => setGlobalTab('essay')} className={`px-5 py-2.5 rounded-xl font-bold transition-all text-sm ${globalTab === 'essay' ? 'bg-purple-600 text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                      {language === 'id' ? 'Esai' : 'Essay'} ({globalQuestions.filter(q=>q.type==='essay').length})
+                    </button>
+                  </div>
+
+                  <div className="space-y-6">
+                    {globalQuestions.filter(q => q.type === globalTab).length === 0 && (
+                      <p className="text-center text-slate-500 py-10">{language === 'id' ? 'Belum ada soal tipe ini di koleksi.' : 'No questions of this type in collection.'}</p>
+                    )}
+                    {globalQuestions.filter(q => q.type === globalTab).map((q, idx) => (
+                      <div key={q.id} className="relative pb-6 border-b border-dashed border-slate-200 pr-12 group">
+                        <div className="flex gap-2 items-center mb-2">
+                          <span className="text-xs font-bold text-slate-400 bg-slate-100 px-2 py-1 rounded">{q.sourceModule}</span>
+                          <span className="text-xs text-slate-400">{q.date}</span>
+                        </div>
+                        <p className="font-semibold text-lg text-slate-800 mb-3">{idx + 1}. {q.question}</p>
+                        
+                        {q.type === 'mcq' && (
+                          <div className="bg-green-50/50 border border-green-100 text-green-800 p-4 rounded-xl text-sm">
+                            <span className="font-bold">{language === 'id' ? 'Kunci:' : 'Key:'}</span> {q.correctAnswer} <br/>
+                            <span className="italic text-slate-600 mt-1 block">{q.explanation}</span>
+                          </div>
+                        )}
+                        {q.type === 'short' && (
+                          <div className="text-orange-700 font-bold bg-orange-50 p-3 rounded-lg border border-orange-100 inline-block">
+                            {language === 'id' ? 'Jawaban:' : 'Answer:'} {q.answer}
+                          </div>
+                        )}
+                        {q.type === 'essay' && (
+                          <div className="bg-purple-50 p-4 rounded-xl text-sm text-purple-900 border border-purple-100">
+                            <span className="font-bold block text-purple-700 mb-1">{language === 'id' ? 'Panduan:' : 'Guide:'}</span>
+                            <p>{q.answerKey}</p>
+                          </div>
+                        )}
+
+                        <button onClick={() => deleteFromGlobalBank(q.id)} className="absolute top-4 right-0 p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100" title={language === 'id' ? 'Hapus Soal' : 'Delete Question'}>
+                          <Trash size={18} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* TAB: AI SOLVER */}
           {activeTab === 'solver' && (
             <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-4xl mx-auto">
@@ -764,14 +916,15 @@ export default function App() {
                   {language === 'id' ? 'AI Penjawab Soal Otomatis' : 'AI Auto Solver'}
                 </h1>
                 <p className="text-slate-500 text-lg max-w-xl mx-auto">
-                  {language === 'id' ? 'Tempelkan soal ujian, tugas, atau unggah foto dokumen LKS. AI akan memberikan jawaban dan penjelasan rincinya.' : 'Paste exam questions, assignments, or upload a photo of the worksheet. AI will provide answers and detailed explanations.'}
+                  {language === 'id' ? 'Tempelkan soal ujian, tugas, atau unggah dokumen (PDF/Word/TXT). AI akan menganalisis dan memberikan jawaban rinci.' : 'Paste exam questions, assignments, or upload documents (PDF/Word/TXT). AI will analyze and provide detailed answers.'}
                 </p>
               </header>
 
               <div className="bg-white rounded-3xl shadow-sm border border-blue-100 p-6 md:p-8 mb-8">
-                <div className="flex justify-center gap-2 mb-6">
+                <div className="flex justify-center flex-wrap gap-2 mb-6">
                   <InputTab icon={<AlignLeft size={16}/>} label={language === 'id' ? 'Teks Soal' : 'Text Question'} active={solverInputType === 'text'} onClick={() => setSolverInputType('text')} />
                   <InputTab icon={<ImageIcon size={16}/>} label={language === 'id' ? 'Foto/Screenshot' : 'Photo/Screenshot'} active={solverInputType === 'image'} onClick={() => setSolverInputType('image')} />
+                  <InputTab icon={<FileIcon size={16}/>} label={language === 'id' ? 'Dokumen (PDF/Word)' : 'Document (PDF/Word)'} active={solverInputType === 'document'} onClick={() => setSolverInputType('document')} />
                 </div>
 
                 {solverInputType === 'text' && (
@@ -794,6 +947,27 @@ export default function App() {
                   </div>
                 )}
 
+                {solverInputType === 'document' && (
+                  <div className="border-2 border-dashed border-blue-300 rounded-2xl p-8 text-center hover:bg-blue-50 transition-colors cursor-pointer relative bg-slate-50 mb-6">
+                    <input type="file" accept=".pdf,.doc,.docx,.txt" onChange={handleDocumentUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                    <FileIcon size={48} className="mx-auto text-blue-400 mb-4" />
+                    {solverDocName ? (
+                       <div className="text-slate-700 font-bold">
+                         {solverDocName} <CheckCircle2 className="inline text-green-500 ml-1" size={18} />
+                       </div>
+                    ) : (
+                       <div>
+                         <p className="text-slate-600 font-medium mb-1">
+                           {language === 'id' ? 'Unggah Dokumen Soal' : 'Upload Question Document'}
+                         </p>
+                         <p className="text-slate-400 text-sm">
+                           {language === 'id' ? 'Mendukung format: .pdf, .docx, .txt' : 'Supported formats: .pdf, .docx, .txt'}
+                         </p>
+                       </div>
+                    )}
+                  </div>
+                )}
+
                 {solverError && (
                   <div className="bg-red-50 text-red-600 p-4 rounded-xl text-sm border border-red-100 flex items-start gap-2 mb-6">
                     <XCircle size={18} className="shrink-0 mt-0.5" />
@@ -812,46 +986,63 @@ export default function App() {
               </div>
 
               {solverResult && (
-                <div className="bg-white rounded-3xl shadow-lg border border-slate-200 overflow-hidden animate-in slide-in-from-bottom-4">
-                  <div className="bg-blue-50 border-b border-blue-100 p-6 flex items-start gap-4">
+                <div className="space-y-6 animate-in slide-in-from-bottom-4">
+                  
+                  {/* Overall Summary Card */}
+                  <div className="bg-blue-50 border border-blue-100 p-6 rounded-3xl flex items-start gap-4 shadow-sm">
                     <Bot size={28} className="text-blue-600 shrink-0 mt-1" />
                     <div>
-                      <h3 className="font-bold text-slate-800 text-lg">{language === 'id' ? 'Ringkasan Soal:' : 'Question Summary:'}</h3>
-                      <p className="text-slate-600">{solverResult.questionSummary}</p>
+                      <h3 className="font-bold text-slate-800 text-lg mb-1">{language === 'id' ? 'Analisis AI:' : 'AI Analysis:'}</h3>
+                      <p className="text-slate-700 leading-relaxed font-medium">{solverResult.overallSummary}</p>
                     </div>
                   </div>
-                  <div className="p-8 space-y-6">
-                    <div>
-                      <h4 className="text-sm font-bold text-green-600 uppercase tracking-widest mb-2 flex items-center gap-2">
-                        <CheckCircle2 size={16} /> {language === 'id' ? 'Jawaban' : 'Answer'}
-                      </h4>
-                      <div className="text-2xl font-extrabold text-slate-800 bg-green-50 p-4 rounded-2xl border border-green-100">
-                        {solverResult.answer}
-                      </div>
-                    </div>
-                    
-                    <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
-                      <h4 className="text-sm font-bold text-blue-600 uppercase tracking-widest mb-3 flex items-center gap-2">
-                        <Lightbulb size={16} /> {language === 'id' ? 'Penjelasan Detail' : 'Detailed Explanation'}
-                      </h4>
-                      <p className="text-slate-700 leading-relaxed whitespace-pre-wrap text-lg">
-                        {solverResult.detailedExplanation}
-                      </p>
-                    </div>
 
-                    <div>
-                      <h4 className="text-sm font-bold text-purple-600 uppercase tracking-widest mb-3">
-                        {language === 'id' ? 'Konsep Terkait' : 'Related Concepts'}
-                      </h4>
-                      <div className="flex flex-wrap gap-2">
-                        {solverResult.keyConcepts.map((concept, idx) => (
-                          <span key={idx} className="bg-purple-100 text-purple-800 px-3 py-1 rounded-full text-sm font-medium border border-purple-200">
-                            {concept}
-                          </span>
-                        ))}
+                  {/* Render Each Question in a separate neat card */}
+                  {solverResult.solvedQuestions && solverResult.solvedQuestions.map((item, idx) => (
+                    <div key={idx} className="bg-white rounded-3xl shadow-md border border-slate-200 overflow-hidden">
+                      <div className="bg-slate-50 border-b border-slate-100 p-6">
+                        <h4 className="font-semibold text-slate-500 text-sm uppercase tracking-wider mb-2">
+                          {language === 'id' ? 'Pertanyaan' : 'Question'} {idx + 1}
+                        </h4>
+                        <p className="text-lg font-bold text-slate-800 leading-relaxed">{item.originalQuestion}</p>
+                      </div>
+                      
+                      <div className="p-6 md:p-8 space-y-6">
+                        <div>
+                          <h4 className="text-sm font-bold text-green-600 uppercase tracking-widest mb-2 flex items-center gap-2">
+                            <CheckCircle2 size={16} /> {language === 'id' ? 'Jawaban' : 'Answer'}
+                          </h4>
+                          <div className="text-xl font-extrabold text-green-900 bg-green-50 p-4 rounded-2xl border border-green-100">
+                            {item.answer}
+                          </div>
+                        </div>
+                        
+                        <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
+                          <h4 className="text-sm font-bold text-blue-600 uppercase tracking-widest mb-3 flex items-center gap-2">
+                            <Lightbulb size={16} /> {language === 'id' ? 'Pembahasan Detail' : 'Detailed Explanation'}
+                          </h4>
+                          <p className="text-slate-700 leading-relaxed whitespace-pre-wrap">
+                            {item.detailedExplanation}
+                          </p>
+                        </div>
+
+                        {item.keyConcepts && item.keyConcepts.length > 0 && (
+                          <div>
+                            <h4 className="text-sm font-bold text-purple-600 uppercase tracking-widest mb-3">
+                              {language === 'id' ? 'Konsep Terkait' : 'Related Concepts'}
+                            </h4>
+                            <div className="flex flex-wrap gap-2">
+                              {item.keyConcepts.map((concept, cIdx) => (
+                                <span key={cIdx} className="bg-purple-100 text-purple-800 px-3 py-1 rounded-full text-sm font-medium border border-purple-200">
+                                  {concept}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
-                  </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -866,7 +1057,14 @@ export default function App() {
                 <div className="absolute top-0 left-0 w-full h-3 bg-gradient-to-r from-emerald-500 via-green-400 to-blue-500"></div>
                 
                 {/* Download Actions */}
-                <div className="absolute top-6 right-6 flex gap-2">
+                <div className="absolute top-6 right-6 flex gap-2 z-10">
+                  <button 
+                    onClick={handleSaveProject} 
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-xl transition-colors text-sm font-bold border ${saveStatus ? 'bg-green-50 text-green-700 border-green-200' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-100'}`}
+                    title="Save Project"
+                  >
+                    {saveStatus ? <CheckCircle size={16} /> : <Save size={16} />} <span className="hidden sm:inline">{saveStatus || (language === 'id' ? 'Simpan' : 'Save')}</span>
+                  </button>
                   <button 
                     onClick={handleDownloadWord} 
                     className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-xl transition-colors text-sm font-bold border border-blue-100"
@@ -1003,6 +1201,14 @@ export default function App() {
                 {/* Download Actions for Questions */}
                 <div className="absolute top-6 right-6 hidden md:flex gap-2 z-10">
                   <button 
+                    onClick={saveToGlobalBank} 
+                    className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-xl transition-colors text-sm font-bold border border-emerald-100"
+                    title="Save to Global Bank"
+                  >
+                    {globalSaveStatus ? <CheckCircle size={16} /> : <Database size={16} />} 
+                    <span>{globalSaveStatus || (language === 'id' ? 'Simpan ke Koleksi' : 'Save to Collection')}</span>
+                  </button>
+                  <button 
                     onClick={handleDownloadQuestionsWord} 
                     className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-xl transition-colors text-sm font-bold border border-blue-100"
                     title="Export Word Document (.doc)"
@@ -1019,17 +1225,18 @@ export default function App() {
                 </div>
 
                 <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-slate-100 pb-6 mb-6">
-                  <div className="pr-0 md:pr-40">
+                  <div className="pr-0 md:pr-60">
                     <h2 className="text-3xl font-extrabold text-slate-800 mb-2">
                       {language === 'id' ? 'Bank Soal Komprehensif' : 'Comprehensive Question Bank'}
                     </h2>
                     <p className="text-slate-500">
-                      {language === 'id' ? 'Pilih tipe soal yang ingin Anda salin atau gunakan.' : 'Select the type of question you want to copy or use.'}
+                      {language === 'id' ? 'Pilih tipe soal yang ingin Anda salin atau simpan ke koleksi.' : 'Select the question type to copy or save to collection.'}
                     </p>
                   </div>
                   
                   {/* Mobile Download Buttons */}
-                  <div className="flex md:hidden gap-2 mt-4">
+                  <div className="flex md:hidden gap-2 mt-4 flex-wrap">
+                    <button onClick={saveToGlobalBank} className="w-full flex justify-center items-center gap-2 px-3 py-2 bg-emerald-50 text-emerald-700 rounded-xl font-bold border border-emerald-100">{globalSaveStatus ? <CheckCircle size={16} /> : <Database size={16} />} {globalSaveStatus || 'Koleksi'}</button>
                     <button onClick={handleDownloadQuestionsWord} className="flex-1 flex justify-center items-center gap-2 px-3 py-2 bg-blue-50 text-blue-700 rounded-xl font-bold border border-blue-100"><FileDown size={16} /> Word</button>
                     <button onClick={handleDownloadQuestionsPDF} className="flex-1 flex justify-center items-center gap-2 px-3 py-2 bg-red-50 text-red-700 rounded-xl font-bold border border-red-100"><Download size={16} /> PDF</button>
                   </div>
@@ -1170,6 +1377,60 @@ export default function App() {
             </div>
           )}
 
+          {/* TAB: SAVED PROJECTS */}
+          {activeTab === 'saved' && (
+            <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-5xl mx-auto pb-20">
+              <header className="mb-8 border-b border-slate-200 pb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h1 className="text-3xl font-extrabold text-slate-800 mb-2 flex items-center gap-3">
+                    <Folder className="text-blue-500" size={32} />
+                    {language === 'id' ? 'Proyek Tersimpan' : 'Saved Projects'}
+                  </h1>
+                  <p className="text-slate-500 text-lg">
+                    {language === 'id' ? 'Kelola dan buka kembali modul yang telah Anda buat sebelumnya.' : 'Manage and reopen modules you have created previously.'}
+                  </p>
+                </div>
+                <div className="bg-slate-100 text-slate-600 px-4 py-2 rounded-lg font-bold text-sm border border-slate-200">
+                  {savedProjects.length} {language === 'id' ? 'Modul Tersimpan' : 'Saved Modules'}
+                </div>
+              </header>
+
+              {savedProjects.length === 0 ? (
+                <div className="bg-white rounded-3xl border-2 border-dashed border-slate-200 p-12 text-center">
+                  <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-300">
+                    <Folder size={40} />
+                  </div>
+                  <h3 className="text-xl font-bold text-slate-700 mb-2">{language === 'id' ? 'Belum Ada Proyek' : 'No Projects Yet'}</h3>
+                  <p className="text-slate-500 mb-6">{language === 'id' ? 'Buat materi geografi baru dan klik tombol Simpan untuk menyimpannya di sini.' : 'Create a new geography lesson and click Save to store it here.'}</p>
+                  <button onClick={() => setActiveTab('create')} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-xl transition-all inline-flex items-center gap-2">
+                    <Sparkles size={18} /> {language === 'id' ? 'Buat Materi Sekarang' : 'Create Lesson Now'}
+                  </button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {savedProjects.map((project) => (
+                    <div key={project.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex flex-col hover:shadow-md transition-shadow group relative overflow-hidden">
+                      <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-blue-400 to-emerald-400"></div>
+                      <div className="flex justify-between items-start mb-4">
+                        <div className="bg-blue-50 text-blue-700 p-2 rounded-lg"><BookOpen size={20} /></div>
+                        <button onClick={() => deleteProject(project.id)} className="text-slate-300 hover:text-red-500 transition-colors p-1" title={language === 'id' ? 'Hapus' : 'Delete'}>
+                          <Trash2 size={18} />
+                        </button>
+                      </div>
+                      <h3 className="font-bold text-lg text-slate-800 mb-2 line-clamp-2" title={project.title}>{project.title}</h3>
+                      <div className="flex items-center gap-2 text-xs text-slate-500 mb-6 font-medium mt-auto pt-4">
+                        <Clock size={14} /> {project.date}
+                      </div>
+                      <button onClick={() => loadProject(project)} className="w-full bg-slate-50 hover:bg-blue-50 hover:text-blue-700 text-slate-700 border border-slate-200 hover:border-blue-200 font-bold py-2.5 rounded-xl transition-colors flex items-center justify-center gap-2">
+                        {language === 'id' ? 'Buka Modul' : 'Open Module'} <ArrowRight size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* TAB: INTERACTIVE QUIZ */}
           {activeTab === 'quiz' && lessonData && (
             <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-2xl mx-auto pb-20">
@@ -1289,7 +1550,7 @@ export default function App() {
       </main>
 
       {/* Floating AI Assistant Bar (Refine Prompt) */}
-      {lessonData && activeTab !== 'create' && activeTab !== 'quiz' && activeTab !== 'solver' && (
+      {lessonData && activeTab !== 'create' && activeTab !== 'quiz' && activeTab !== 'solver' && activeTab !== 'global' && activeTab !== 'saved' && (
         <div className="fixed bottom-0 left-0 md:left-64 right-0 bg-white/85 backdrop-blur-xl border-t border-slate-200 p-4 shadow-[0_-15px_40px_-15px_rgba(0,0,0,0.08)] z-30 animate-in slide-in-from-bottom-full duration-500">
           <div className="max-w-4xl mx-auto flex gap-3 items-center">
             <div className="bg-gradient-to-tr from-blue-500 to-indigo-500 text-white p-3 rounded-full hidden sm:flex items-center justify-center shadow-md">
